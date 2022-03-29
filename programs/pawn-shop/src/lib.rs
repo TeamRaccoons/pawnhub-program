@@ -130,7 +130,6 @@ pub mod pawn_shop {
 
     pub fn repay_loan(ctx: Context<RepayLoan>) -> Result<()> {
         let unix_timestamp = Clock::get()?.unix_timestamp;
-        let pawn_loan_account_info = ctx.accounts.pawn_loan.clone().to_account_info();
         let loan = &mut ctx.accounts.pawn_loan;
 
         invariant!(loan.first_bid_time != 0, CannotRepayLoanWith0Bid);
@@ -159,7 +158,7 @@ pub mod pawn_shop {
                 token::Transfer {
                     from: ctx.accounts.pawn_token_account.to_account_info(),
                     to: ctx.accounts.owner_token_account.to_account_info(),
-                    authority: pawn_loan_account_info,
+                    authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
                 &[&[
                     b"pawn-token-account",
@@ -214,7 +213,7 @@ pub mod pawn_shop {
                 ctx.accounts.token_program.to_account_info(),
                 token::Transfer {
                     from: ctx.accounts.pawn_token_account.to_account_info(),
-                    to: ctx.accounts.lender.to_account_info(),
+                    to: ctx.accounts.lender_token_account.to_account_info(),
                     authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
                 &[&[
