@@ -176,7 +176,6 @@ pub mod pawn_shop {
     }
 
     pub fn cancel_loan(ctx: Context<CancelLoan>) -> Result<()> {
-        let pawn_loan_account_info = ctx.accounts.pawn_loan.clone().to_account_info();
         let loan = &mut ctx.accounts.pawn_loan;
 
         invariant!(loan.first_bid_time == 0, CannotCancelLoanWithMoreThanZeroBids);
@@ -187,10 +186,10 @@ pub mod pawn_shop {
                 token::Transfer {
                     from: ctx.accounts.pawn_token_account.to_account_info(),
                     to: ctx.accounts.owner_token_account.to_account_info(),
-                    authority: pawn_loan_account_info,
+                    authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
                 &[&[
-                    b"pawn-loan",
+                    b"pawn-token-account",
                     loan.key().as_ref(),
                     &[loan.bump],
                 ]],
@@ -216,10 +215,10 @@ pub mod pawn_shop {
                 token::Transfer {
                     from: ctx.accounts.pawn_token_account.to_account_info(),
                     to: ctx.accounts.lender.to_account_info(),
-                    authority: ctx.accounts.pawn_loan.to_account_info(),
+                    authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
                 &[&[
-                    b"pawn-loan",
+                    b"pawn-token-account",
                     loan.key().as_ref(),
                     &[loan.bump],
                 ]],
