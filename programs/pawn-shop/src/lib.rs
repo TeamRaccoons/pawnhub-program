@@ -20,7 +20,7 @@ pub mod pawn_shop {
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
         pawn_loan.bump = unwrap_bump!(ctx, "pawn_token_account");
-        pawn_loan.status = LoanStatus::Created;
+        pawn_loan.status = LoanStatus::Open;
         pawn_loan.borrower = ctx.accounts.borrower.key();
         pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
         pawn_loan.desired_terms = desired_terms;
@@ -46,10 +46,10 @@ pub mod pawn_shop {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Created, InvalidLoanStatus);
+        invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
 
         let terms = ctx.accounts.offer.terms.clone();
-        pawn_loan.status = LoanStatus::Ongoing;
+        pawn_loan.status = LoanStatus::Active;
         pawn_loan.start_time = unix_timestamp;
         pawn_loan.lender = ctx.accounts.offer.lender.key();
         let principal_amount = terms.principal_amount;
@@ -74,10 +74,10 @@ pub mod pawn_shop {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Created, InvalidLoanStatus);
+        invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
 
         let terms = unwrap_opt!(pawn_loan.desired_terms.clone());
-        pawn_loan.status = LoanStatus::Ongoing;
+        pawn_loan.status = LoanStatus::Active;
         pawn_loan.start_time = unix_timestamp;
         pawn_loan.lender = ctx.accounts.lender.key();
         let principal_amount = terms.principal_amount;
@@ -101,7 +101,7 @@ pub mod pawn_shop {
         let offer = &mut ctx.accounts.offer;
         let pawn_loan = &ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Created, InvalidLoanStatus);
+        invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
 
         offer.bump = unwrap_bump!(ctx, "offer");
         offer.lender = ctx.accounts.lender.key();
@@ -125,7 +125,7 @@ pub mod pawn_shop {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Ongoing, InvalidLoanStatus);
+        invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
 
         pawn_loan.status = LoanStatus::Repaid;
 
@@ -182,7 +182,7 @@ pub mod pawn_shop {
     pub fn cancel_loan(ctx: Context<CancelLoan>) -> Result<()> {
         let loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(loan.status == LoanStatus::Created, InvalidLoanStatus);
+        invariant!(loan.status == LoanStatus::Open, InvalidLoanStatus);
         loan.status = LoanStatus::Cancelled;
 
         token::transfer(
@@ -213,7 +213,7 @@ pub mod pawn_shop {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Ongoing, InvalidLoanStatus);
+        invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
 
         let terms = unwrap_opt!(pawn_loan.terms.clone());
         let end_time = unwrap_int!(pawn_loan.start_time.checked_add(terms.duration));
@@ -352,8 +352,8 @@ pub struct CloseOffer<'info> {
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq)]
 pub enum LoanStatus {
-    Created,
-    Ongoing,
+    Open,
+    Active,
     Repaid,
     Defaulted,
     Cancelled,
