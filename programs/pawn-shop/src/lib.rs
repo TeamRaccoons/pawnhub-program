@@ -6,7 +6,7 @@ use vipers::prelude::*;
 
 const ADMIN_FEE_BPS: u64 = 100;
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("JB3M5KsB9jmBvffzpTi3Z9W1W8KStCWTMYYNyNK2kCcQ");
 
 #[program]
 pub mod pawn_shop {
