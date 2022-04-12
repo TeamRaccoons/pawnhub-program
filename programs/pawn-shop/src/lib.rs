@@ -5,8 +5,9 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use vipers::prelude::*;
 
 const ADMIN_FEE_BPS: u64 = 100;
+const SECONDS_PER_YEAR: u32 = 31_536_000;
 
-declare_id!("JB3M5KsB9jmBvffzpTi3Z9W1W8KStCWTMYYNyNK2kCcQ");
+declare_id!("2mTFJUZLVwjDufmE12KvXEs18J9RcTjpGbWhbd8fMs2J");
 
 #[program]
 pub mod pawn_shop {
@@ -40,9 +41,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    pub fn begin_loan(
-        ctx: Context<BeginLoan>,
-    ) -> Result<()> {
+    pub fn begin_loan(ctx: Context<BeginLoan>) -> Result<()> {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
@@ -58,9 +57,8 @@ pub mod pawn_shop {
         let offer_account_info = ctx.accounts.offer.to_account_info();
         let borrower_account_info = ctx.accounts.borrower.to_account_info();
 
-        **offer_account_info.lamports.borrow_mut() = unwrap_int!(offer_account_info
-            .lamports()
-            .checked_sub(principal_amount));
+        **offer_account_info.lamports.borrow_mut() =
+            unwrap_int!(offer_account_info.lamports().checked_sub(principal_amount));
         **borrower_account_info.lamports.borrow_mut() = unwrap_int!(borrower_account_info
             .lamports()
             .checked_add(principal_amount));
@@ -68,9 +66,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    pub fn underwrite_loan(
-        ctx: Context<UnderwriteLoan>,
-    ) -> Result<()> {
+    pub fn underwrite_loan(ctx: Context<UnderwriteLoan>) -> Result<()> {
         let unix_timestamp = Clock::get()?.unix_timestamp;
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
@@ -193,11 +189,7 @@ pub mod pawn_shop {
                     to: ctx.accounts.borrower_token_account.to_account_info(),
                     authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
-                &[&[
-                    b"pawn-token-account",
-                    loan.key().as_ref(),
-                    &[loan.bump],
-                ]],
+                &[&[b"pawn-token-account", loan.key().as_ref(), &[loan.bump]]],
             ),
             ctx.accounts.pawn_token_account.amount,
         )?;
@@ -362,7 +354,7 @@ pub enum LoanStatus {
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct LoanTerms {
     pub principal_amount: u64,
-    pub interest_rate_for_duration_bps: u64,
+    pub annual_percentage_rate_bps: u64,
     pub duration: i64,
 }
 
@@ -388,15 +380,17 @@ pub struct Offer {
 
 // TODO: do checked math
 pub fn compute_interest_due(terms: &LoanTerms, start_time: i64, timestamp: i64) -> Result<u64> {
-    let interest_due_after_entire_duration = terms.principal_amount as u128
-        * terms.interest_rate_for_duration_bps as u128 / 10_000;
-    
     let elapsed_time = unwrap_int!(timestamp.checked_sub(start_time));
 
-    let interest_due_after_elapsed_duration = interest_due_after_entire_duration
-        * elapsed_time as u128 / terms.duration as u128;
+    let interest_due = terms.principal_amount as u128
+        * terms.annual_percentage_rate_bps as u128
+        * elapsed_time as u128
+        / SECONDS_PER_YEAR as u128
+        / 10_000;
 
-    interest_due_after_elapsed_duration.try_into().map_err(|_| error!(ErrorCode::CalculationError))
+    interest_due
+        .try_into()
+        .map_err(|_| error!(ErrorCode::CalculationError))
 }
 
 #[error_code]
@@ -415,13 +409,19 @@ mod tests {
     fn compute_interest_due_is_correct() {
         let terms = LoanTerms {
             principal_amount: 5_000_000_000,
-            interest_rate_for_duration_bps: 3500, // 35%
-            duration: 7 * 24 * 60 * 60, // 7 days
+            annual_percentage_rate_bps: 3500, // 35%
+            duration: 7 * 24 * 60 * 60,       // 7 days
         };
         // Entire duration
-        assert_eq!(1_750_000_000, compute_interest_due(&terms, 123456789, 123456789 + terms.duration).unwrap());
+        assert_eq!(
+            33_561_643,
+            compute_interest_due(&terms, 123456789, 123456789 + terms.duration).unwrap()
+        );
 
         // Half duration
-        assert_eq!(875_000_000, compute_interest_due(&terms, 123456789, 123456789 + terms.duration / 2).unwrap());
+        assert_eq!(
+            16_780_821,
+            compute_interest_due(&terms, 123456789, 123456789 + terms.duration / 2).unwrap()
+        );
     }
 }
