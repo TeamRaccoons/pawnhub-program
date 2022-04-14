@@ -1,7 +1,9 @@
 [features]
 seeds = false
+
 [programs.localnet]
-pawn_shop = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+pawn_shop = "PawnShop11111111111111111111111111111111112"
+faucet = "Faucet11111111111111111111111111111111111112"
 
 [registry]
 url = "https://anchor.projectserum.com"
