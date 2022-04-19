@@ -1,4 +1,4 @@
-use std::convert::TryInto;
+use std::{convert::TryInto, cmp};
 
 use anchor_lang::{prelude::*, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
@@ -6,6 +6,7 @@ use vipers::prelude::*;
 
 const ADMIN_FEE_BPS: u64 = 0;
 const SECONDS_PER_YEAR: u32 = 31_536_000;
+const MINIMUM_PERIOD_RATIO_BPS: i64 = 2_500;
 
 mod native_mint {
     use super::*;
@@ -193,7 +194,11 @@ pub mod pawn_shop {
                     to: ctx.accounts.borrower_pawn_token_account.to_account_info(),
                     authority: ctx.accounts.pawn_token_account.to_account_info(),
                 },
-                &[&[b"pawn-token-account", pawn_loan.key().as_ref(), &[pawn_loan.bump]]],
+                &[&[
+                    b"pawn-token-account",
+                    pawn_loan.key().as_ref(),
+                    &[pawn_loan.bump],
+                ]],
             ),
             ctx.accounts.pawn_token_account.amount,
         )?;
@@ -395,11 +400,16 @@ pub struct Offer {
 
 // TODO: do checked math
 pub fn compute_interest_due(terms: &LoanTerms, start_time: i64, timestamp: i64) -> Result<u64> {
+    // Elapsed time is at a minimum X% of the total duration in order to floor the minimum interest
     let elapsed_time = unwrap_int!(timestamp.checked_sub(start_time));
+    let minimum_interest_duration =
+        terms.duration * MINIMUM_PERIOD_RATIO_BPS / 10_000;
+
+    let effective_elapsed_time = cmp::max(elapsed_time, minimum_interest_duration);
 
     let interest_due = terms.principal_amount as u128
         * terms.annual_percentage_rate_bps as u128
-        * elapsed_time as u128
+        * effective_elapsed_time as u128
         / SECONDS_PER_YEAR as u128
         / 10_000;
 
@@ -438,6 +448,12 @@ mod tests {
         assert_eq!(
             16_780_821,
             compute_interest_due(&terms, 123456789, 123456789 + terms.duration / 2).unwrap()
+        );
+
+        // 10% of the duration should be brought back to 25% of duration as being the minimum chargeable duration
+        assert_eq!(
+            8_390_410,
+            compute_interest_due(&terms, 123456789, 123456789 + terms.duration / 10).unwrap()
         );
     }
 }
