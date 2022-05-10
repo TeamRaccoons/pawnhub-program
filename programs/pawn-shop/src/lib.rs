@@ -4,7 +4,7 @@ use anchor_lang::{prelude::*, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use vipers::prelude::*;
 
-const ADMIN_FEE_BPS: u64 = 0;
+const ADMIN_FEE_BPS: u64 = 200;
 const SECONDS_PER_YEAR: u32 = 31_536_000;
 const MINIMUM_PERIOD_RATIO_BPS: i64 = 2_500;
 
@@ -123,7 +123,7 @@ pub mod pawn_shop {
         let payoff_amount = terms.principal_amount + interest_due - admin_fee;
         pawn_loan.end_time = unix_timestamp;
 
-        // Transfer payoff to lender
+        // Transfer payoff to lender and admin fee
         if terms.mint == native_mint::ID {
             assert_keys_eq!(pawn_loan.lender, ctx.accounts.lender_payment_account);
 
@@ -136,6 +136,19 @@ pub mod pawn_shop {
                     },
                 ),
                 payoff_amount,
+            )?;
+
+            assert_keys_eq!(ctx.accounts.admin, ctx.accounts.admin_payment_account);
+
+            system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.borrower_payment_account.to_account_info(),
+                        to: ctx.accounts.admin_payment_account.to_account_info(),
+                    },
+                ),
+                admin_fee,
             )?;
         } else {
             let lender_payment_token_account: Account<TokenAccount> =
@@ -153,9 +166,23 @@ pub mod pawn_shop {
                 ),
                 payoff_amount,
             )?;
-        }
 
-        // TODO: Transfer fees
+            let admin_payment_token_account: Account<TokenAccount> =
+                Account::try_from(&ctx.accounts.admin_payment_account)?;
+            assert_keys_eq!(ctx.accounts.admin, admin_payment_token_account.owner);
+
+            token::transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.borrower_payment_account.to_account_info(),
+                        to: ctx.accounts.admin_payment_account.to_account_info(),
+                        authority: ctx.accounts.borrower.to_account_info(),
+                    },
+                ),
+                admin_fee,
+            )?;
+        }
 
         // Get the collateral back
         token::transfer(
@@ -316,9 +343,11 @@ pub struct RepayLoan<'info> {
     /// CHECK: Receives the payoff, can be the borrower wallet or his spl token account
     #[account(mut)]
     pub lender_payment_account: UncheckedAccount<'info>,
-    /// CHECK: Receives admin fee, address is unique per program
-    #[account(mut, seeds = [b"admin"], bump)] // Fees are parked into a PDA for now
-    pub admin: UncheckedAccount<'info>,
+    #[account(seeds = [b"admin"], bump)]
+    pub admin: SystemAccount<'info>,
+    /// CHECK: Receives admin fee, can be the admin pda or a spl token account owned by the admin pda
+    #[account(mut)]
+    pub admin_payment_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
