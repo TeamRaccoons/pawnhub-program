@@ -84,6 +84,7 @@ pub mod pawn_shop {
             let borrower_payment_token_account: Account<TokenAccount> =
                 Account::try_from(&ctx.accounts.borrower_payment_account)?;
             assert_eq!(pawn_loan.borrower, borrower_payment_token_account.owner);
+            assert_keys_eq!(loan_mint, borrower_payment_token_account.mint);
 
             token::transfer(
                 CpiContext::new(
@@ -154,6 +155,7 @@ pub mod pawn_shop {
             let lender_payment_token_account: Account<TokenAccount> =
                 Account::try_from(&ctx.accounts.lender_payment_account)?;
             assert_keys_eq!(pawn_loan.lender, lender_payment_token_account.owner);
+            assert_keys_eq!(terms.mint, lender_payment_token_account.mint);
 
             token::transfer(
                 CpiContext::new(
@@ -170,6 +172,8 @@ pub mod pawn_shop {
             let admin_payment_token_account: Account<TokenAccount> =
                 Account::try_from(&ctx.accounts.admin_payment_account)?;
             assert_keys_eq!(ctx.accounts.admin, admin_payment_token_account.owner);
+            assert_keys_eq!(terms.mint, admin_payment_token_account.mint);
+
 
             token::transfer(
                 CpiContext::new(
