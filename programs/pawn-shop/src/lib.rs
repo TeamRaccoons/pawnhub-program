@@ -259,6 +259,22 @@ pub mod pawn_shop {
             ctx.accounts.pawn_token_account.amount,
         )?;
 
+        token::close_account(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                token::CloseAccount {
+                    account: ctx.accounts.pawn_token_account.to_account_info(),
+                    destination: ctx.accounts.borrower.to_account_info(),
+                    authority: ctx.accounts.pawn_token_account.to_account_info(),
+                },
+                &[&[
+                    b"pawn-token-account",
+                    pawn_loan.key().as_ref(),
+                    &[pawn_loan.bump],
+                ]],
+            ),
+        )?;
+
         Ok(())
     }
 
@@ -386,7 +402,7 @@ pub struct RepayLoan<'info> {
 pub struct CancelLoan<'info> {
     #[account(mut, has_one = borrower, has_one = pawn_token_account, close = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(mut, close = borrower)]
+    #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
     #[account(mut)]
     pub borrower: Signer<'info>,

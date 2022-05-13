@@ -1,22 +1,15 @@
 import * as anchor from "@project-serum/anchor";
 import { BN, IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
-import {
-  NATIVE_MINT,
-  Token,
-  TOKEN_PROGRAM_ID,
-  AccountLayout as TokenAccountLayout,
-  AccountInfo as TokenAccountInfo,
-} from "@solana/spl-token";
+import { NATIVE_MINT, Token, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { assert } from "chai";
 import { PawnShop } from "../target/types/pawn_shop";
 import { deserializeTokenAccountInfo } from "./utils";
+import { PublicKey, Keypair } from "@solana/web3.js";
 
-const { Keypair } = anchor.web3;
-
-const borrowerKeypair = new Keypair();
-const pawnLoanKeypair = new Keypair();
-const lenderKeypair = new Keypair();
+const BORROWER_KEYPAIR = new Keypair();
+const PAWN_LOAN_KEYPAIR = new Keypair();
+const LENDER_KEYPAIR = new Keypair();
 
 export type PawnLoan = Omit<
   IdlAccounts<PawnShop>["pawnLoan"],
@@ -26,6 +19,39 @@ export type PawnLoan = Omit<
   terms: LoanTerms | null;
 };
 export type LoanTerms = IdlTypes<PawnShop>["LoanTerms"];
+
+async function requestLoan(
+  program: Program<PawnShop>,
+  pawnLoanKeypair: Keypair,
+  borrowerKeypair: Keypair,
+  pawnMint: PublicKey,
+  borrowerPawnTokenAccount: PublicKey,
+  expectedDesiredTerms: LoanTerms
+) {
+  const borrower = borrowerKeypair.publicKey;
+
+  const pawnTokenAccount = findProgramAddressSync(
+    [Buffer.from("pawn-token-account"), pawnLoanKeypair.publicKey.toBuffer()],
+    program.programId
+  )[0];
+
+  const signature = await program.methods
+    .requestLoan(new BN(1), expectedDesiredTerms)
+    .accounts({
+      pawnLoan: pawnLoanKeypair.publicKey,
+      pawnTokenAccount,
+      pawnMint,
+      borrower,
+      borrowerPawnTokenAccount,
+    })
+    .signers([pawnLoanKeypair, borrowerKeypair])
+    .rpc();
+
+  return {
+    signature,
+    pawnTokenAccount,
+  };
+}
 
 describe("pawn-shop", () => {
   // Configure the client to use the local cluster.
@@ -41,62 +67,49 @@ describe("pawn-shop", () => {
     const provider = program.provider;
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(
-        borrowerKeypair.publicKey,
+        BORROWER_KEYPAIR.publicKey,
         10_000_000_000
       ),
       "confirmed"
     );
 
-    const borrower = provider.wallet.publicKey;
+    const expectedDesiredTerms: LoanTerms = {
+      principalAmount: new BN(1),
+      mint: NATIVE_MINT,
+      annualPercentageRateBps: new BN(1_000),
+      duration: new BN(1234),
+    };
 
     // Create mint and mint token
     const mintA = await Token.createMint(
       provider.connection,
-      borrowerKeypair,
-      borrowerKeypair.publicKey,
+      BORROWER_KEYPAIR,
+      BORROWER_KEYPAIR.publicKey,
       null,
       0,
       TOKEN_PROGRAM_ID
     );
 
-    const borrowerPawnTokenAccount = await mintA.createAccount(borrower);
+    const borrowerPawnTokenAccount = await mintA.createAccount(
+      BORROWER_KEYPAIR.publicKey
+    );
+    await mintA.mintTo(borrowerPawnTokenAccount, BORROWER_KEYPAIR, [], 1);
 
-    await mintA.mintTo(borrowerPawnTokenAccount, borrowerKeypair, [], 1);
-
-    const principalAmount = new BN(1);
-    const annualPercentageRateBps = new BN(1_000);
-    const duration = new BN(1000);
-
-    const pawnTokenAccount = findProgramAddressSync(
-      [Buffer.from("pawn-token-account"), pawnLoanKeypair.publicKey.toBuffer()],
-      program.programId
-    )[0];
-
-    const expectedDesiredTerms: LoanTerms = {
-      principalAmount,
-      mint: NATIVE_MINT,
-      annualPercentageRateBps,
-      duration,
-    };
-
-    await program.methods
-      .requestLoan(new BN(1), expectedDesiredTerms)
-      .accounts({
-        pawnLoan: pawnLoanKeypair.publicKey,
-        pawnTokenAccount,
-        pawnMint: mintA.publicKey,
-        borrower,
-        borrowerPawnTokenAccount,
-      })
-      .signers([pawnLoanKeypair])
-      .rpc();
+    await requestLoan(
+      program,
+      PAWN_LOAN_KEYPAIR,
+      BORROWER_KEYPAIR,
+      mintA.publicKey,
+      borrowerPawnTokenAccount,
+      expectedDesiredTerms
+    );
 
     const pawnLoan = await program.account.pawnLoan.fetch(
-      pawnLoanKeypair.publicKey
+      PAWN_LOAN_KEYPAIR.publicKey
     );
     const desiredTerms = pawnLoan.desiredTerms;
 
-    assert.isTrue(pawnLoan.borrower.equals(borrower));
+    assert.isTrue(pawnLoan.borrower.equals(BORROWER_KEYPAIR.publicKey));
     assert.isTrue(
       desiredTerms?.principalAmount.eq(expectedDesiredTerms.principalAmount)
     );
@@ -115,17 +128,20 @@ describe("pawn-shop", () => {
 
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(
-        lenderKeypair.publicKey,
+        LENDER_KEYPAIR.publicKey,
         10_000_000_000
       ),
       "confirmed"
     );
 
     const pawnLoan = await program.account.pawnLoan.fetch(
-      pawnLoanKeypair.publicKey
+      PAWN_LOAN_KEYPAIR.publicKey
     );
     const pawnTokenAccount = findProgramAddressSync(
-      [Buffer.from("pawn-token-account"), pawnLoanKeypair.publicKey.toBuffer()],
+      [
+        Buffer.from("pawn-token-account"),
+        PAWN_LOAN_KEYPAIR.publicKey.toBuffer(),
+      ],
       program.programId
     )[0];
 
@@ -149,27 +165,94 @@ describe("pawn-shop", () => {
     const tx = await program.methods
       .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(1))
       .accounts({
-        pawnLoan: pawnLoanKeypair.publicKey,
+        pawnLoan: PAWN_LOAN_KEYPAIR.publicKey,
         pawnTokenAccount,
-        lender: lenderKeypair.publicKey,
-        lenderPaymentAccount: lenderKeypair.publicKey,
+        lender: LENDER_KEYPAIR.publicKey,
+        lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
         borrowerPaymentAccount: pawnLoan.borrower,
       })
-      .signers([lenderKeypair])
+      .signers([LENDER_KEYPAIR])
       .rpc();
 
     const pawnLoanAfter = await program.account.pawnLoan.fetch(
-      pawnLoanKeypair.publicKey
+      PAWN_LOAN_KEYPAIR.publicKey
     );
     const terms = pawnLoanAfter.terms;
 
     assert.isTrue(
       terms?.principalAmount.eq(expectedDesiredTerms.principalAmount)
     );
-    assert.isTrue(pawnLoanAfter.lender.equals(lenderKeypair.publicKey));
+    assert.isTrue(pawnLoanAfter.lender.equals(LENDER_KEYPAIR.publicKey));
   });
 
   it("Repay Loan", async () => {
     // TODO
+  });
+
+  it("Cancel loan", async () => {
+    const provider = program.provider;
+    const pawnLoanKeypair = new Keypair();
+    const expectedDesiredTerms: LoanTerms = {
+      principalAmount: new BN(1),
+      mint: NATIVE_MINT,
+      annualPercentageRateBps: new BN(1_000),
+      duration: new BN(1234),
+    };
+
+    // Create mint and mint token
+    const mintA = await Token.createMint(
+      provider.connection,
+      BORROWER_KEYPAIR,
+      BORROWER_KEYPAIR.publicKey,
+      null,
+      0,
+      TOKEN_PROGRAM_ID
+    );
+
+    const borrowerPawnTokenAccount = await mintA.createAccount(
+      BORROWER_KEYPAIR.publicKey
+    );
+    await mintA.mintTo(borrowerPawnTokenAccount, BORROWER_KEYPAIR, [], 1);
+
+    const { pawnTokenAccount } = await requestLoan(
+      program,
+      pawnLoanKeypair,
+      BORROWER_KEYPAIR,
+      mintA.publicKey,
+      borrowerPawnTokenAccount,
+      expectedDesiredTerms
+    );
+
+    await program.methods
+      .cancelLoan()
+      .accounts({
+        pawnLoan: pawnLoanKeypair.publicKey,
+        pawnTokenAccount,
+        borrower: BORROWER_KEYPAIR.publicKey,
+        borrowerPawnTokenAccount,
+      })
+      .signers([BORROWER_KEYPAIR])
+      .rpc();
+
+    // Relevant accounts should be zeroed (back to system program and no lamports) and pawn back in wallet
+    const pawnLoanAccountInfo =
+      await program.provider.connection.getAccountInfo(
+        pawnLoanKeypair.publicKey
+      );
+    assert.isNull(pawnLoanAccountInfo);
+
+    const pawnTokenAccountInfo =
+      await program.provider.connection.getAccountInfo(pawnTokenAccount);
+    assert.isNull(pawnTokenAccountInfo);
+
+    const borrowerPawnTokenAccountInfo =
+      await program.provider.connection.getAccountInfo(
+        borrowerPawnTokenAccount
+      );
+
+    const decodedBorrowerPawnTokenAccountInfo = deserializeTokenAccountInfo(
+      borrowerPawnTokenAccountInfo?.data
+    );
+    assert.isTrue(decodedBorrowerPawnTokenAccountInfo?.amount.eq(new BN(1)));
   });
 });
