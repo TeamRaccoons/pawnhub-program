@@ -28,37 +28,46 @@ pub mod pawn_shop {
         amount: u64,
         desired_terms: Option<LoanTerms>,
     ) -> Result<()> {
-        let unix_timestamp = Clock::get()?.unix_timestamp;
-        let pawn_loan = &mut ctx.accounts.pawn_loan;
+        {
+            let unix_timestamp = Clock::get()?.unix_timestamp;
+            let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(amount != 0, PawnAmountIsZero);
+            invariant!(amount != 0, PawnAmountIsZero);
 
-        pawn_loan.bump = unwrap_bump!(ctx, "pawn_token_account");
-        pawn_loan.status = LoanStatus::Open;
-        pawn_loan.borrower = ctx.accounts.borrower.key();
-        pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
-        match &desired_terms {
-            Some(terms) => {
-                invariant!(terms.principal_amount != 0, InvalidLoanTerms);
-                invariant!(terms.annual_percentage_rate_bps != 0, InvalidLoanTerms);
-                invariant!(terms.duration > 0, InvalidLoanTerms);
+            pawn_loan.bump = unwrap_bump!(ctx, "pawn_token_account");
+            pawn_loan.status = LoanStatus::Open;
+            pawn_loan.borrower = ctx.accounts.borrower.key();
+            pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
+            match &desired_terms {
+                Some(terms) => {
+                    invariant!(terms.principal_amount != 0, InvalidLoanTerms);
+                    invariant!(terms.annual_percentage_rate_bps != 0, InvalidLoanTerms);
+                    invariant!(terms.duration > 0, InvalidLoanTerms);
+                }
+                _ => (),
             }
-            _ => (),
-        }
-        pawn_loan.desired_terms = desired_terms;
-        pawn_loan.creation_time = unix_timestamp;
+            pawn_loan.desired_terms = desired_terms;
+            pawn_loan.creation_time = unix_timestamp;
 
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                token::Transfer {
-                    from: ctx.accounts.borrower_pawn_token_account.to_account_info(),
-                    to: ctx.accounts.pawn_token_account.to_account_info(),
-                    authority: ctx.accounts.borrower.to_account_info(),
-                },
-            ),
-            amount,
-        )?;
+            token::transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.borrower_pawn_token_account.to_account_info(),
+                        to: ctx.accounts.pawn_token_account.to_account_info(),
+                        authority: ctx.accounts.borrower.to_account_info(),
+                    },
+                ),
+                amount,
+            )?;
+        }
+
+        emit!(LoanRequested {
+            pawn_loan_address: ctx.accounts.pawn_loan.key(),
+            pawn_loan: *ctx.accounts.pawn_loan,
+            pawn_mint: ctx.accounts.pawn_token_account.mint,
+            pawn_amount: amount,
+        });
 
         Ok(())
     }
@@ -69,64 +78,73 @@ pub mod pawn_shop {
         expected_pawn_mint: Pubkey,
         expected_pawn_amount: u64,
     ) -> Result<()> {
-        let unix_timestamp = Clock::get()?.unix_timestamp;
-        let pawn_loan = &mut ctx.accounts.pawn_loan;
+        {
+            let unix_timestamp = Clock::get()?.unix_timestamp;
+            let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
+            invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
 
-        let terms = unwrap_opt!(pawn_loan.desired_terms.clone());
-        pawn_loan.status = LoanStatus::Active;
-        pawn_loan.start_time = unix_timestamp;
-        pawn_loan.lender = ctx.accounts.lender.key();
+            let terms = unwrap_opt!(pawn_loan.desired_terms.clone());
+            pawn_loan.status = LoanStatus::Active;
+            pawn_loan.start_time = unix_timestamp;
+            pawn_loan.lender = ctx.accounts.lender.key();
 
-        // Verify loan matches lender expectation
-        invariant!(expected_terms == terms, UnexpectedDesiredTerms);
-        let pawn_token_account = &ctx.accounts.pawn_token_account;
-        assert_keys_eq!(
-            expected_pawn_mint,
-            pawn_token_account.mint,
-            UnexpectedPawnMint
-        );
-        invariant!(
-            expected_pawn_amount == pawn_token_account.amount,
-            UnexpectedPawnAmount
-        );
+            // Verify loan matches lender expectation
+            invariant!(expected_terms == terms, UnexpectedDesiredTerms);
+            let pawn_token_account = &ctx.accounts.pawn_token_account;
+            assert_keys_eq!(
+                expected_pawn_mint,
+                pawn_token_account.mint,
+                UnexpectedPawnMint
+            );
+            invariant!(
+                expected_pawn_amount == pawn_token_account.amount,
+                UnexpectedPawnAmount
+            );
 
-        let principal_amount = terms.principal_amount;
-        let loan_mint = terms.mint;
-        pawn_loan.terms = Some(terms);
+            let principal_amount = terms.principal_amount;
+            let loan_mint = terms.mint;
+            pawn_loan.terms = Some(terms.clone());
 
-        if loan_mint == native_mint::ID {
-            assert_keys_eq!(pawn_loan.borrower, ctx.accounts.borrower_payment_account);
+            if loan_mint == native_mint::ID {
+                assert_keys_eq!(pawn_loan.borrower, ctx.accounts.borrower_payment_account);
 
-            system_program::transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.to_account_info(),
-                    system_program::Transfer {
-                        from: ctx.accounts.lender_payment_account.to_account_info(),
-                        to: ctx.accounts.borrower_payment_account.to_account_info(),
-                    },
-                ),
-                principal_amount,
-            )?;
-        } else {
-            let borrower_payment_token_account: Account<TokenAccount> =
-                Account::try_from(&ctx.accounts.borrower_payment_account)?;
-            assert_keys_eq!(pawn_loan.borrower, borrower_payment_token_account.owner);
-            assert_keys_eq!(loan_mint, borrower_payment_token_account.mint);
+                system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        system_program::Transfer {
+                            from: ctx.accounts.lender_payment_account.to_account_info(),
+                            to: ctx.accounts.borrower_payment_account.to_account_info(),
+                        },
+                    ),
+                    principal_amount,
+                )?;
+            } else {
+                let borrower_payment_token_account: Account<TokenAccount> =
+                    Account::try_from(&ctx.accounts.borrower_payment_account)?;
+                assert_keys_eq!(pawn_loan.borrower, borrower_payment_token_account.owner);
+                assert_keys_eq!(loan_mint, borrower_payment_token_account.mint);
 
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    token::Transfer {
-                        from: ctx.accounts.lender_payment_account.to_account_info(),
-                        to: ctx.accounts.borrower_payment_account.to_account_info(),
-                        authority: ctx.accounts.lender.to_account_info(),
-                    },
-                ),
-                principal_amount,
-            )?;
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        token::Transfer {
+                            from: ctx.accounts.lender_payment_account.to_account_info(),
+                            to: ctx.accounts.borrower_payment_account.to_account_info(),
+                            authority: ctx.accounts.lender.to_account_info(),
+                        },
+                    ),
+                    principal_amount,
+                )?;
+            }
         }
+
+        emit!(LoanUnderwritten {
+            pawn_loan_address: ctx.accounts.pawn_loan.key(),
+            pawn_loan: *ctx.accounts.pawn_loan,
+            pawn_mint: ctx.accounts.pawn_token_account.mint,
+            pawn_amount: ctx.accounts.pawn_token_account.amount,
+        });
 
         Ok(())
     }
@@ -140,99 +158,109 @@ pub mod pawn_shop {
     // }
 
     pub fn repay_loan(ctx: Context<RepayLoan>) -> Result<()> {
-        let unix_timestamp = Clock::get()?.unix_timestamp;
-        let pawn_loan = &mut ctx.accounts.pawn_loan;
+        {
+            let unix_timestamp = Clock::get()?.unix_timestamp;
+            let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
+            invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
 
-        pawn_loan.status = LoanStatus::Repaid;
+            pawn_loan.status = LoanStatus::Repaid;
 
-        let terms = unwrap_opt!(pawn_loan.terms.clone());
-        let interest_due = compute_interest_due(&terms, pawn_loan.start_time, unix_timestamp)?;
-        let admin_fee = compute_admin_fee(interest_due)?;
-        let payoff_amount = compute_payoff_amount(terms.principal_amount, interest_due, admin_fee)?;
-        pawn_loan.end_time = unix_timestamp;
+            let terms = unwrap_opt!(pawn_loan.terms.clone());
+            let interest_due = compute_interest_due(&terms, pawn_loan.start_time, unix_timestamp)?;
+            let admin_fee = compute_admin_fee(interest_due)?;
+            let payoff_amount =
+                compute_payoff_amount(terms.principal_amount, interest_due, admin_fee)?;
+            pawn_loan.end_time = unix_timestamp;
 
-        // Transfer payoff to lender and admin fee
-        if terms.mint == native_mint::ID {
-            assert_keys_eq!(pawn_loan.lender, ctx.accounts.lender_payment_account);
+            // Transfer payoff to lender and admin fee
+            if terms.mint == native_mint::ID {
+                assert_keys_eq!(pawn_loan.lender, ctx.accounts.lender_payment_account);
 
-            system_program::transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.to_account_info(),
-                    system_program::Transfer {
-                        from: ctx.accounts.borrower_payment_account.to_account_info(),
-                        to: ctx.accounts.lender_payment_account.to_account_info(),
-                    },
-                ),
-                payoff_amount,
-            )?;
+                system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        system_program::Transfer {
+                            from: ctx.accounts.borrower_payment_account.to_account_info(),
+                            to: ctx.accounts.lender_payment_account.to_account_info(),
+                        },
+                    ),
+                    payoff_amount,
+                )?;
 
-            assert_keys_eq!(ctx.accounts.admin, ctx.accounts.admin_payment_account);
+                assert_keys_eq!(ctx.accounts.admin, ctx.accounts.admin_payment_account);
 
-            system_program::transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.to_account_info(),
-                    system_program::Transfer {
-                        from: ctx.accounts.borrower_payment_account.to_account_info(),
-                        to: ctx.accounts.admin_payment_account.to_account_info(),
-                    },
-                ),
-                admin_fee,
-            )?;
-        } else {
-            let lender_payment_token_account: Account<TokenAccount> =
-                Account::try_from(&ctx.accounts.lender_payment_account)?;
-            assert_keys_eq!(pawn_loan.lender, lender_payment_token_account.owner);
-            assert_keys_eq!(terms.mint, lender_payment_token_account.mint);
+                system_program::transfer(
+                    CpiContext::new(
+                        ctx.accounts.system_program.to_account_info(),
+                        system_program::Transfer {
+                            from: ctx.accounts.borrower_payment_account.to_account_info(),
+                            to: ctx.accounts.admin_payment_account.to_account_info(),
+                        },
+                    ),
+                    admin_fee,
+                )?;
+            } else {
+                let lender_payment_token_account: Account<TokenAccount> =
+                    Account::try_from(&ctx.accounts.lender_payment_account)?;
+                assert_keys_eq!(pawn_loan.lender, lender_payment_token_account.owner);
+                assert_keys_eq!(terms.mint, lender_payment_token_account.mint);
 
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        token::Transfer {
+                            from: ctx.accounts.borrower_payment_account.to_account_info(),
+                            to: ctx.accounts.lender_payment_account.to_account_info(),
+                            authority: ctx.accounts.borrower.to_account_info(),
+                        },
+                    ),
+                    payoff_amount,
+                )?;
+
+                let admin_payment_token_account: Account<TokenAccount> =
+                    Account::try_from(&ctx.accounts.admin_payment_account)?;
+                assert_keys_eq!(ctx.accounts.admin, admin_payment_token_account.owner);
+                assert_keys_eq!(terms.mint, admin_payment_token_account.mint);
+
+                token::transfer(
+                    CpiContext::new(
+                        ctx.accounts.token_program.to_account_info(),
+                        token::Transfer {
+                            from: ctx.accounts.borrower_payment_account.to_account_info(),
+                            to: ctx.accounts.admin_payment_account.to_account_info(),
+                            authority: ctx.accounts.borrower.to_account_info(),
+                        },
+                    ),
+                    admin_fee,
+                )?;
+            }
+
+            // Get the collateral back
             token::transfer(
-                CpiContext::new(
+                CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
                     token::Transfer {
-                        from: ctx.accounts.borrower_payment_account.to_account_info(),
-                        to: ctx.accounts.lender_payment_account.to_account_info(),
-                        authority: ctx.accounts.borrower.to_account_info(),
+                        from: ctx.accounts.pawn_token_account.to_account_info(),
+                        to: ctx.accounts.borrower_pawn_token_account.to_account_info(),
+                        authority: ctx.accounts.pawn_token_account.to_account_info(),
                     },
+                    &[&[
+                        b"pawn-token-account",
+                        pawn_loan.key().as_ref(),
+                        &[pawn_loan.bump],
+                    ]],
                 ),
-                payoff_amount,
-            )?;
-
-            let admin_payment_token_account: Account<TokenAccount> =
-                Account::try_from(&ctx.accounts.admin_payment_account)?;
-            assert_keys_eq!(ctx.accounts.admin, admin_payment_token_account.owner);
-            assert_keys_eq!(terms.mint, admin_payment_token_account.mint);
-
-            token::transfer(
-                CpiContext::new(
-                    ctx.accounts.token_program.to_account_info(),
-                    token::Transfer {
-                        from: ctx.accounts.borrower_payment_account.to_account_info(),
-                        to: ctx.accounts.admin_payment_account.to_account_info(),
-                        authority: ctx.accounts.borrower.to_account_info(),
-                    },
-                ),
-                admin_fee,
+                ctx.accounts.pawn_token_account.amount,
             )?;
         }
 
-        // Get the collateral back
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::Transfer {
-                    from: ctx.accounts.pawn_token_account.to_account_info(),
-                    to: ctx.accounts.borrower_pawn_token_account.to_account_info(),
-                    authority: ctx.accounts.pawn_token_account.to_account_info(),
-                },
-                &[&[
-                    b"pawn-token-account",
-                    pawn_loan.key().as_ref(),
-                    &[pawn_loan.bump],
-                ]],
-            ),
-            ctx.accounts.pawn_token_account.amount,
-        )?;
+        emit!(LoanRepaid {
+            pawn_loan_address: ctx.accounts.pawn_loan.key(),
+            pawn_loan: *ctx.accounts.pawn_loan,
+            pawn_mint: ctx.accounts.pawn_token_account.mint,
+            pawn_amount: ctx.accounts.pawn_token_account.amount,
+        });
 
         Ok(())
     }
@@ -259,21 +287,19 @@ pub mod pawn_shop {
             ctx.accounts.pawn_token_account.amount,
         )?;
 
-        token::close_account(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::CloseAccount {
-                    account: ctx.accounts.pawn_token_account.to_account_info(),
-                    destination: ctx.accounts.borrower.to_account_info(),
-                    authority: ctx.accounts.pawn_token_account.to_account_info(),
-                },
-                &[&[
-                    b"pawn-token-account",
-                    pawn_loan.key().as_ref(),
-                    &[pawn_loan.bump],
-                ]],
-            ),
-        )?;
+        token::close_account(CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            token::CloseAccount {
+                account: ctx.accounts.pawn_token_account.to_account_info(),
+                destination: ctx.accounts.borrower.to_account_info(),
+                authority: ctx.accounts.pawn_token_account.to_account_info(),
+            },
+            &[&[
+                b"pawn-token-account",
+                pawn_loan.key().as_ref(),
+                &[pawn_loan.bump],
+            ]],
+        ))?;
 
         Ok(())
     }
@@ -283,33 +309,42 @@ pub mod pawn_shop {
     // }
 
     pub fn seize_pawn(ctx: Context<SeizePawn>) -> Result<()> {
-        let unix_timestamp = Clock::get()?.unix_timestamp;
-        let pawn_loan = &mut ctx.accounts.pawn_loan;
+        {
+            let unix_timestamp = Clock::get()?.unix_timestamp;
+            let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-        invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
+            invariant!(pawn_loan.status == LoanStatus::Active, InvalidLoanStatus);
 
-        let terms = unwrap_opt!(pawn_loan.terms.clone());
-        let overdue_time = unwrap_int!(pawn_loan.start_time.checked_add(terms.duration));
-        invariant!(overdue_time < unix_timestamp, CannotSeizeBeforeExpiry);
-        pawn_loan.status = LoanStatus::Defaulted;
-        pawn_loan.end_time = unix_timestamp;
+            let terms = unwrap_opt!(pawn_loan.terms.clone());
+            let overdue_time = unwrap_int!(pawn_loan.start_time.checked_add(terms.duration));
+            invariant!(overdue_time < unix_timestamp, CannotSeizeBeforeExpiry);
+            pawn_loan.status = LoanStatus::Defaulted;
+            pawn_loan.end_time = unix_timestamp;
 
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::Transfer {
-                    from: ctx.accounts.pawn_token_account.to_account_info(),
-                    to: ctx.accounts.lender_pawn_token_account.to_account_info(),
-                    authority: ctx.accounts.pawn_token_account.to_account_info(),
-                },
-                &[&[
-                    b"pawn-token-account",
-                    pawn_loan.key().as_ref(),
-                    &[pawn_loan.bump],
-                ]],
-            ),
-            ctx.accounts.pawn_token_account.amount,
-        )?;
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.pawn_token_account.to_account_info(),
+                        to: ctx.accounts.lender_pawn_token_account.to_account_info(),
+                        authority: ctx.accounts.pawn_token_account.to_account_info(),
+                    },
+                    &[&[
+                        b"pawn-token-account",
+                        pawn_loan.key().as_ref(),
+                        &[pawn_loan.bump],
+                    ]],
+                ),
+                ctx.accounts.pawn_token_account.amount,
+            )?;
+        }
+
+        emit!(PawnSeized {
+            pawn_loan_address: ctx.accounts.pawn_loan.key(),
+            pawn_loan: *ctx.accounts.pawn_loan,
+            pawn_mint: ctx.accounts.pawn_token_account.mint,
+            pawn_amount: ctx.accounts.pawn_token_account.amount,
+        });
 
         Ok(())
     }
@@ -432,7 +467,7 @@ pub struct CloseOffer<'info> {
     pub lender: Signer<'info>,
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq)]
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq)]
 pub enum LoanStatus {
     Open,
     Active,
@@ -440,7 +475,7 @@ pub enum LoanStatus {
     Defaulted,
 }
 
-#[derive(Clone, AnchorSerialize, AnchorDeserialize, PartialEq)]
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq)]
 pub struct LoanTerms {
     pub principal_amount: u64,
     pub mint: Pubkey,
@@ -455,6 +490,7 @@ impl LoanTerms {
 }
 
 #[account]
+#[derive(Copy)]
 pub struct PawnLoan {
     pub bump: u8,
     pub borrower: Pubkey,
@@ -545,6 +581,38 @@ pub enum ErrorCode {
     UnexpectedPawnAmount,
     CannotCancelLoanWithMoreThanZeroBids,
     CannotSeizeBeforeExpiry,
+}
+
+#[event]
+pub struct LoanRequested {
+    pawn_loan_address: Pubkey,
+    pawn_loan: PawnLoan,
+    pawn_mint: Pubkey,
+    pawn_amount: u64,
+}
+
+#[event]
+pub struct LoanUnderwritten {
+    pawn_loan_address: Pubkey,
+    pawn_loan: PawnLoan,
+    pawn_mint: Pubkey,
+    pawn_amount: u64,
+}
+
+#[event]
+pub struct LoanRepaid {
+    pawn_loan_address: Pubkey,
+    pawn_loan: PawnLoan,
+    pawn_mint: Pubkey,
+    pawn_amount: u64,
+}
+
+#[event]
+pub struct PawnSeized {
+    pawn_loan_address: Pubkey,
+    pawn_loan: PawnLoan,
+    pawn_mint: Pubkey,
+    pawn_amount: u64,
 }
 
 #[cfg(test)]

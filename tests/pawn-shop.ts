@@ -12,6 +12,14 @@ import { assert } from "chai";
 import { PawnShop } from "../target/types/pawn_shop";
 import { deserializeTokenAccountInfo } from "./utils";
 import { PublicKey, Keypair } from "@solana/web3.js";
+import fs from "fs";
+
+// Hack to prune events from the idl to prevent deserialization bug (account struct is not a defined type)
+const pawnShopIdl = JSON.parse(
+  fs.readFileSync("./target/idl/pawn_shop.json", "utf8")
+);
+delete pawnShopIdl["events"];
+fs.writeFileSync("./target/idl/pawn_shop.json", JSON.stringify(pawnShopIdl));
 
 const BORROWER_KEYPAIR = new Keypair();
 const LENDER_KEYPAIR = new Keypair();
