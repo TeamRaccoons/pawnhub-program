@@ -126,6 +126,46 @@ describe("PawnHub", () => {
       assert.isNull(pawnLoan.terms);
     });
 
+    it("Moves NFT to program escrow", async () => {
+      const pawnTokenAccount = findProgramAddressSync(
+        [
+          Buffer.from("pawn-token-account"),
+          pawnLoanKeypair.publicKey.toBuffer(),
+        ],
+        program.programId
+      )[0];
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(pawnTokenAccount);
+
+      // Before: Mint is in borrower pawn token account.
+      assert.strictEqual(
+        await await (
+          await mintA.getAccountInfo(borrowerPawnTokenAccount)
+        ).amount.toNumber(),
+        1
+      );
+      // Before: Pawn token account not created yet.
+      assert.isNull(pawnTokenAccountInfo);
+
+      await requestLoan(
+        program,
+        pawnLoanKeypair,
+        BORROWER_KEYPAIR,
+        mintA.publicKey,
+        borrowerPawnTokenAccount,
+        TERMS_VALID
+      );
+
+      // After: Mint moved to program escrow.
+      assert.strictEqual(
+        await await (
+          await mintA.getAccountInfo(pawnTokenAccount)
+        ).amount.toNumber(),
+        1
+      );
+    });
+
     it("Should throw if invalid principal requested", async () => {
       let termsInvalid = {} as LoanTerms;
       Object.assign(termsInvalid, TERMS_VALID);
@@ -167,9 +207,6 @@ describe("PawnHub", () => {
         termsInvalid
       );
     });
-
-    // it("Moves NFT to program escrow", async () => {
-    // });
   });
 
   describe("Underwrite Loan", () => {
@@ -183,6 +220,7 @@ describe("PawnHub", () => {
         TERMS_VALID
       );
     });
+
     it("Underwrite Loan", async () => {
       const pawnLoan = await program.account.pawnLoan.fetch(
         pawnLoanKeypair.publicKey
