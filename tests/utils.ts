@@ -1,9 +1,11 @@
+import { Program } from "@project-serum/anchor";
 import {
   AccountInfo as TokenAccountInfo,
   AccountLayout,
   u64,
 } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
+import { PawnShop } from "../target/types/pawn_shop";
 
 export const deserializeTokenAccountInfo = (
   data: Buffer | undefined
@@ -43,4 +45,34 @@ export const deserializeTokenAccountInfo = (
   }
 
   return accountInfo;
+};
+
+export const getBorrowerAndLenderSolBalance = async (
+  program: Program<PawnShop>,
+  borrower: PublicKey,
+  lender: PublicKey
+): Promise<number[]> => {
+  const borrowerBalance = await program.provider.connection.getBalance(
+    borrower
+  );
+  const lenderBalance = await program.provider.connection.getBalance(lender);
+  return [borrowerBalance, lenderBalance];
+};
+
+export const getBorrowerAndLenderTokenBalance = async (
+  program: Program<PawnShop>,
+  borrower: PublicKey,
+  lender: PublicKey
+): Promise<(number | null)[]> => {
+  const borrowerBalance = (
+    await program.provider.connection.getTokenAccountBalance(borrower)
+  ).value.uiAmount;
+  const lenderBalance = (
+    await program.provider.connection.getTokenAccountBalance(lender)
+  ).value.uiAmount;
+  return [borrowerBalance, lenderBalance];
+};
+
+export const delay = async (timeInMS: number) => {
+  return new Promise((_) => setTimeout(_, timeInMS));
 };

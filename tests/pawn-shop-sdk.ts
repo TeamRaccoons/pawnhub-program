@@ -23,8 +23,7 @@ export type PawnLoan = Omit<
 };
 export type LoanTerms = IdlTypes<PawnShop>["LoanTerms"];
 
-// Basic case for standard NFT loan with SOL as loan currency.
-export async function requestStandardLoan(
+export async function requestLoan(
   program: Program<PawnShop>,
   pawnLoanKeypair: Keypair,
   borrowerKeypair: Keypair,
@@ -32,7 +31,6 @@ export async function requestStandardLoan(
   borrowerPawnTokenAccount: PublicKey,
   expectedDesiredTerms: LoanTerms
 ) {
-  const borrower = borrowerKeypair.publicKey;
   const pawnTokenAccount = findProgramAddressSync(
     [Buffer.from("pawn-token-account"), pawnLoanKeypair.publicKey.toBuffer()],
     program.programId
@@ -44,16 +42,13 @@ export async function requestStandardLoan(
       pawnLoan: pawnLoanKeypair.publicKey,
       pawnTokenAccount,
       pawnMint,
-      borrower,
+      borrower: borrowerKeypair.publicKey,
       borrowerPawnTokenAccount,
     })
     .signers([pawnLoanKeypair, borrowerKeypair])
     .rpc();
 
-  return {
-    signature,
-    pawnTokenAccount,
-  };
+  return { signature, pawnTokenAccount };
 }
 
 export async function underwriteLoan(
@@ -89,6 +84,75 @@ export async function underwriteLoan(
       lender: lenderKeypair.publicKey,
       lenderPaymentAccount: lenderPaymentAccount,
       borrowerPaymentAccount: borrowerPaymentAccount,
+    })
+    .signers([lenderKeypair])
+    .rpc();
+}
+
+// Borrower, lender and admin payment accounts are the wallet pk
+export async function repayLoanInSol(
+  program: Program<PawnShop>,
+  pawnLoanKeypair: Keypair,
+  pawnTokenAccount: PublicKey,
+  borrowerKeypair: Keypair,
+  borrowerPawnTokenAccount: PublicKey,
+  lenderWallet: PublicKey,
+  adminPda: PublicKey
+) {
+  return await repayLoan(
+    program,
+    pawnLoanKeypair,
+    pawnTokenAccount,
+    borrowerKeypair,
+    borrowerKeypair.publicKey /** borrowerPaymentAccount */,
+    borrowerPawnTokenAccount,
+    lenderWallet /** lenderPaymentAccount */,
+    adminPda /** admin pda */,
+    adminPda /** adminPaymenAccount */
+  );
+}
+
+export async function repayLoan(
+  program: Program<PawnShop>,
+  pawnLoanKeypair: Keypair,
+  pawnTokenAccount: PublicKey,
+  borrowerKeypair: Keypair,
+  borrowerPaymentAccount: PublicKey,
+  borrowerPawnTokenAccount: PublicKey,
+  lenderPaymentAccount: PublicKey,
+  adminPda: PublicKey,
+  adminPaymentAccount: PublicKey
+) {
+  return await program.methods
+    .repayLoan()
+    .accounts({
+      pawnLoan: pawnLoanKeypair.publicKey,
+      pawnTokenAccount,
+      borrower: borrowerKeypair.publicKey,
+      borrowerPaymentAccount,
+      borrowerPawnTokenAccount,
+      lenderPaymentAccount,
+      admin: adminPda,
+      adminPaymentAccount,
+    })
+    .signers([borrowerKeypair])
+    .rpc();
+}
+
+export async function seizePawn(
+  program: Program<PawnShop>,
+  pawnLoan: PublicKey,
+  pawnTokenAccount: PublicKey,
+  lenderKeypair: Keypair,
+  lenderPawnTokenAccount: PublicKey
+) {
+  return await program.methods
+    .seizePawn()
+    .accounts({
+      pawnLoan,
+      pawnTokenAccount,
+      lender: lenderKeypair.publicKey,
+      lenderPawnTokenAccount,
     })
     .signers([lenderKeypair])
     .rpc();

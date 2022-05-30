@@ -421,7 +421,7 @@ pub struct RepayLoan<'info> {
     pub borrower_payment_account: UncheckedAccount<'info>,
     #[account(mut)]
     pub borrower_pawn_token_account: Account<'info, TokenAccount>,
-    /// CHECK: Receives the payoff, can be the borrower wallet or his spl token account
+    /// CHECK: Receives the payoff, can be the lender wallet or his spl token account
     #[account(mut)]
     pub lender_payment_account: UncheckedAccount<'info>,
     #[account(seeds = [b"admin"], bump)]
