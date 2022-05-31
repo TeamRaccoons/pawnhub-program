@@ -353,7 +353,6 @@ pub mod pawn_shop {
 #[derive(Accounts)]
 pub struct RequestLoan<'info> {
     #[account(init, payer = borrower, space = PawnLoan::space())]
-    // TODO: Calculate space properly
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(init, seeds = [b"pawn-token-account", pawn_loan.key().as_ref()], bump, payer = borrower, token::mint = pawn_mint, token::authority = pawn_token_account)]
     pub pawn_token_account: Account<'info, TokenAccount>,
