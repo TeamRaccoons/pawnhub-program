@@ -33,14 +33,14 @@ const DEFAULT_LOAN_AMOUNT = 10;
 const TERMS_VALID: LoanTerms = {
   principalAmount: new BN(DEFAULT_LOAN_AMOUNT),
   mint: NATIVE_MINT,
-  annualPercentageRateBps: new BN(10_000), // 10%
+  annualPercentageRateBps: new BN(1_000), // 10%
   duration: new BN(7 * MILLISECONDS_PER_DAY),
 };
 
 const TERMS_SUPER_SHORT_LOAN: LoanTerms = {
   principalAmount: new BN(DEFAULT_LOAN_AMOUNT),
   mint: NATIVE_MINT,
-  annualPercentageRateBps: new BN(10_00), // 10%
+  annualPercentageRateBps: new BN(1_000), // 10%
   duration: new BN(1),
 };
 
@@ -116,7 +116,7 @@ describe("PawnHub", () => {
     termsUsdc = {
       principalAmount: new BN(DEFAULT_LOAN_AMOUNT),
       mint: mintA.publicKey,
-      annualPercentageRateBps: new BN(10_000),
+      annualPercentageRateBps: new BN(1_000),
       duration: new BN(7 * MILLISECONDS_PER_DAY),
     };
   });

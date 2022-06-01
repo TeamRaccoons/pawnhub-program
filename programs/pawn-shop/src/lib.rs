@@ -645,4 +645,19 @@ mod tests {
                 .unwrap()
         );
     }
+    
+    #[test]
+    fn compute_admin_fee_positive_interest() {
+        const POSITIVE_INTEREST: u64 = 100;
+
+        assert_eq!(ADMIN_FEE_BPS * POSITIVE_INTEREST / 10_000,
+            compute_admin_fee(POSITIVE_INTEREST).unwrap()
+        );
+    }
+
+    #[test]
+    fn compute_admin_fee_zero_interest() {
+        // Zero interest
+        assert_eq!(0, compute_admin_fee(0).unwrap());
+    }
 }
