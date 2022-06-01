@@ -168,9 +168,11 @@ pub mod pawn_shop {
 
             let terms = unwrap_opt!(pawn_loan.terms.clone());
             let interest_due = compute_interest_due(&terms, pawn_loan.start_time, unix_timestamp)?;
-            let admin_fee = compute_admin_fee(interest_due)?;
+            let admin_fee = compute_admin_fee(interest_due, ADMIN_FEE_BPS)
+                .ok_or(ErrorCode::CalculationError)?;
             let payoff_amount =
-                compute_payoff_amount(terms.principal_amount, interest_due, admin_fee)?;
+                compute_payoff_amount(terms.principal_amount, interest_due, admin_fee)
+                    .ok_or(ErrorCode::CalculationError)?;
             pawn_loan.end_time = unix_timestamp;
 
             // Transfer payoff to lender and admin fee
@@ -521,39 +523,38 @@ pub struct Offer {
     pub creation_time: i64,
 }
 
-pub fn compute_admin_fee(interest_due: u64) -> Result<u64> {
+pub fn compute_admin_fee(interest_due: u64, admin_fee_bps: u64) -> Option<u64> {
     u128::from(interest_due)
-        .checked_mul(ADMIN_FEE_BPS.into())
-        .ok_or(ErrorCode::CalculationError)?
-        .checked_div(10_000)
-        .ok_or(ErrorCode::CalculationError)?
+        .checked_mul(admin_fee_bps.into())?
+        .checked_div(10_000)?
         .try_into()
-        .map_err(|_| error!(ErrorCode::CalculationError))
+        .ok()
 }
 
 pub fn compute_payoff_amount(
     principal_amount: u64,
     interest_due: u64,
     admin_fee: u64,
-) -> Result<u64> {
+) -> Option<u64> {
     u128::from(principal_amount)
-        .checked_add(interest_due.into())
-        .ok_or(ErrorCode::CalculationError)?
-        .checked_sub(u128::from(admin_fee))
-        .ok_or(ErrorCode::CalculationError)?
+        .checked_add(interest_due.into())?
+        .checked_sub(admin_fee.into())?
         .try_into()
-        .map_err(|_| error!(ErrorCode::CalculationError))
+        .ok()
+}
+
+fn compute_minimum_interest_duration(duration: u64) -> Option<i64> {
+    u128::from(duration)
+        .checked_mul(MINIMUM_PERIOD_RATIO_BPS.into())?
+        .checked_div(10_000)?
+        .try_into()
+        .ok()
 }
 
 pub fn compute_interest_due(terms: &LoanTerms, start_time: i64, timestamp: i64) -> Result<u64> {
     let elapsed_time = unwrap_int!(timestamp.checked_sub(start_time));
-    let minimum_interest_duration = u128::from(terms.duration as u64)
-        .checked_mul(MINIMUM_PERIOD_RATIO_BPS.into())
-        .ok_or(ErrorCode::CalculationError)?
-        .checked_div(10_000)
-        .ok_or(ErrorCode::CalculationError)?
-        .try_into()
-        .map_err(|_| error!(ErrorCode::CalculationError))?;
+    let minimum_interest_duration = compute_minimum_interest_duration(terms.duration as u64)
+        .ok_or(ErrorCode::CalculationError)?;
 
     // Effective elapsed time is at a minimum X% of the total duration in order to floor the minimum interest
     let effective_elapsed_time = cmp::max(elapsed_time, minimum_interest_duration);
@@ -651,13 +652,22 @@ mod tests {
         const POSITIVE_INTEREST: u64 = 100;
 
         assert_eq!(ADMIN_FEE_BPS * POSITIVE_INTEREST / 10_000,
-            compute_admin_fee(POSITIVE_INTEREST).unwrap()
+            compute_admin_fee(POSITIVE_INTEREST, ADMIN_FEE_BPS).unwrap()
         );
     }
 
     #[test]
     fn compute_admin_fee_zero_interest() {
         // Zero interest
-        assert_eq!(0, compute_admin_fee(0).unwrap());
+        assert_eq!(0, compute_admin_fee(0, ADMIN_FEE_BPS).unwrap());
+    }
+
+    #[test]
+    fn compute_payoff_amount_is_correct() {
+        assert_eq!(1234 + 5678 - 10, compute_payoff_amount(1234, 5678, 10).unwrap());
+
+        // When overflow, one too much
+        assert_eq!(None, compute_payoff_amount(u64::MAX, 1, 0));
+        assert_eq!(None, compute_payoff_amount(u64::MAX, 2, 1));
     }
 }
