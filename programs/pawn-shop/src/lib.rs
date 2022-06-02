@@ -14,7 +14,7 @@ mod native_mint {
 }
 
 #[cfg(feature = "devnet")]
-declare_id!("94FKSfd2biiWF1DWvW8i5SLHq7KE2iybohHi7wdaTDyV");
+declare_id!("6LPeFKNuZ39CRgHkoWsRZB8QWrvb8kPLs289G7bF6QgZ");
 
 #[cfg(not(feature = "devnet"))]
 declare_id!("PawnShop11111111111111111111111111111111112");
