@@ -4,9 +4,9 @@ use anchor_lang::{prelude::*, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use vipers::prelude::*;
 
-const ADMIN_FEE_BPS: u64 = 200;
+const ADMIN_FEE_BPS: u64 = 200; // 2%
 const SECONDS_PER_YEAR: u64 = 31_536_000;
-const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500;
+const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500; //25%
 
 mod native_mint {
     use super::*;
@@ -23,6 +23,7 @@ declare_id!("PawnShop11111111111111111111111111111111112");
 pub mod pawn_shop {
     use super::*;
 
+    /// Borrower opens a loan request. Pawn token moves to program escrow.
     pub fn request_loan(
         ctx: Context<RequestLoan>,
         amount: u64,
@@ -72,6 +73,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
+    /// Lender funds the loan request and the loan starts. Funds are transferred to Borrower wallet.
     pub fn underwrite_loan(
         ctx: Context<UnderwriteLoan>,
         expected_terms: LoanTerms,
@@ -149,14 +151,8 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    // Disable for now as not required
-    // pub fn create_offer(ctx: Context<CreateOffer>, terms: LoanTerms) -> Result<()> {
-    //     Ok(())
-    // }
-    // pub fn accept_offer(ctx: Context<BeginLoan>) -> Result<()> {
-    //     Ok(())
-    // }
-
+    /// Borrower pays back loan amount plus interest and gets the pawn back. 
+    /// Lender gets back loan amount plus interest minus admin fee.
     pub fn repay_loan(ctx: Context<RepayLoan>) -> Result<()> {
         {
             let unix_timestamp = Clock::get()?.unix_timestamp;
@@ -175,7 +171,7 @@ pub mod pawn_shop {
                     .ok_or(ErrorCode::CalculationError)?;
             pawn_loan.end_time = unix_timestamp;
 
-            // Transfer payoff to lender and admin fee
+            // Transfer payoff to lender and admin fee.
             if terms.mint == native_mint::ID {
                 assert_keys_eq!(pawn_loan.lender, ctx.accounts.lender_payment_account);
 
@@ -238,7 +234,7 @@ pub mod pawn_shop {
                 )?;
             }
 
-            // Get the collateral back
+            // Borrower gets the pawn back.
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
@@ -267,6 +263,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
+    // Closes the loan request and returns pawn to borrower.
     pub fn cancel_loan(ctx: Context<CancelLoan>) -> Result<()> {
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
@@ -306,10 +303,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    // pub fn close_offer(_ctx: Context<CloseOffer>) -> Result<()> {
-    //     Ok(())
-    // }
-
+    /// Lender seizes pawn from program escrow when loan is overdue. 
     pub fn seize_pawn(ctx: Context<SeizePawn>) -> Result<()> {
         {
             let unix_timestamp = Clock::get()?.unix_timestamp;
@@ -369,16 +363,6 @@ pub struct RequestLoan<'info> {
 }
 
 #[derive(Accounts)]
-pub struct BeginLoan<'info> {
-    #[account(mut, has_one = borrower)]
-    pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(has_one = pawn_loan)]
-    pub offer: Account<'info, Offer>,
-    #[account(mut)]
-    pub borrower: Signer<'info>,
-}
-
-#[derive(Accounts)]
 pub struct UnderwriteLoan<'info> {
     #[account(mut, has_one = pawn_token_account)]
     pub pawn_loan: Account<'info, PawnLoan>,
@@ -391,22 +375,6 @@ pub struct UnderwriteLoan<'info> {
     #[account(mut)]
     pub borrower_payment_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(terms: LoanTerms)]
-pub struct CreateOffer<'info> {
-    #[account(
-        init,
-        seeds = [b"offer", pawn_loan.key().as_ref(), lender.key().as_ref(), &terms.try_to_vec().unwrap()],
-        bump,
-        space = 300, // TODO: Calculate space
-        payer = lender)]
-    pub offer: Account<'info, Offer>,
-    pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(mut)]
-    pub lender: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -460,14 +428,6 @@ pub struct SeizePawn<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-#[derive(Accounts)]
-pub struct CloseOffer<'info> {
-    #[account(mut, has_one = lender, close = lender)]
-    pub offer: Account<'info, Offer>,
-    #[account(mut)]
-    pub lender: Signer<'info>,
-}
-
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq)]
 pub enum LoanStatus {
     Open,
@@ -511,18 +471,6 @@ impl PawnLoan {
     }
 }
 
-#[account]
-pub struct Offer {
-    pub bump: u8,
-    pub pawn_loan: Pubkey,
-    pub offer_payment_account: Pubkey,
-    pub lender: Pubkey,
-    pub terms: LoanTerms,
-    pub pawn_mint: Pubkey,
-    pub pawn_amount: u64,
-    pub creation_time: i64,
-}
-
 pub fn compute_admin_fee(interest_due: u64, admin_fee_bps: u64) -> Option<u64> {
     u128::from(interest_due)
         .checked_mul(admin_fee_bps.into())?
@@ -556,7 +504,7 @@ pub fn compute_interest_due(terms: &LoanTerms, start_time: i64, timestamp: i64) 
     let minimum_interest_duration = compute_minimum_interest_duration(terms.duration as u64)
         .ok_or(ErrorCode::CalculationError)?;
 
-    // Effective elapsed time is at a minimum X% of the total duration in order to floor the minimum interest
+    // The effective elapsed time will be at least the minimum interest duration.
     let effective_elapsed_time = cmp::max(elapsed_time, minimum_interest_duration);
 
     u128::from(terms.principal_amount)
@@ -639,7 +587,7 @@ mod tests {
             compute_interest_due(&terms, 123456789, 123456789 + terms.duration as i64 / 2).unwrap()
         );
 
-        // 10% of the duration should be brought back to 25% of duration as being the minimum chargeable duration
+        // 10% of the duration should be brought back to 25% of duration as it is the minimum chargeable duration
         assert_eq!(
             8_390_410,
             compute_interest_due(&terms, 123456789, 123456789 + terms.duration as i64 / 10)
@@ -666,7 +614,7 @@ mod tests {
     fn compute_payoff_amount_is_correct() {
         assert_eq!(1234 + 5678 - 10, compute_payoff_amount(1234, 5678, 10).unwrap());
 
-        // When overflow, one too much
+        // Overflow cases: one too much
         assert_eq!(None, compute_payoff_amount(u64::MAX, 1, 0));
         assert_eq!(None, compute_payoff_amount(u64::MAX, 2, 1));
     }
