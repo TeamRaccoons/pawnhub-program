@@ -1,6 +1,7 @@
 # Pawnhub Contract
 
 ![License: Apache 2-0](https://img.shields.io/badge/license-Apache--2.0-blueviolet")
+[![CI](https://github.com/TeamRaccoons/pawnhub-program/actions/workflows/main.yaml/badge.svg?branch=main)](https://github.com/TeamRaccoons/pawnhub-program/actions/workflows/main.yaml)
 
 Pawnhub is a P2P pawning platform.
 
