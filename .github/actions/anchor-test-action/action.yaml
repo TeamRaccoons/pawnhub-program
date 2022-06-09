@@ -1,0 +1,26 @@
+name: "Solana Anchor Test"
+author: "MRGN Labs"
+description: "Run anchor tests"
+branding:
+  icon: anchor
+  color: blue
+inputs:
+  workspace_dir:
+    description: "anchor workspace directory"
+    required: false
+    default: "."
+  args:
+    description: "anchor test arguments"
+    required: false
+    default: ""
+runs:
+  using: "docker"
+  image: "docker://mrgnlabs/solana-dev:0.0.2-alpha"
+  entrypoint: shell-exec
+  args:
+    - "cd ${{ inputs.workspace_dir }}"
+    - yarn
+    - yarn add ts-mocha
+    - "solana-keygen new --no-bip39-passphrase"
+    - "anchor test ${{ inputs.args }}"
+    - "cargo test"
