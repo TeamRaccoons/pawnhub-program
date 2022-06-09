@@ -1,10 +1,10 @@
 import * as anchor from "@project-serum/anchor";
 import { BN, Program, AnchorError } from "@project-serum/anchor";
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   NATIVE_MINT,
   Token,
   TOKEN_PROGRAM_ID,
-  AccountInfo as TokenAccountInfo,
 } from "@solana/spl-token";
 import { assert } from "chai";
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
@@ -23,10 +23,24 @@ import {
   underwriteLoan,
 } from "./pawn-shop-sdk";
 import { PawnShop } from "../target/types/pawn_shop";
-import { PublicKey, Keypair, AccountInfo } from "@solana/web3.js";
+import {
+  PublicKey,
+  Keypair,
+  AccountInfo,
+  Transaction,
+  SystemProgram,
+} from "@solana/web3.js";
 
 const BORROWER_KEYPAIR = new Keypair();
 const LENDER_KEYPAIR = new Keypair();
+const FEE_COLLECTOR_KEYPAIR = Keypair.fromSecretKey(
+  new Uint8Array([
+    209, 175, 187, 249, 146, 53, 247, 243, 119, 89, 121, 250, 200, 88, 179, 144,
+    250, 142, 10, 222, 205, 72, 101, 132, 172, 130, 12, 20, 182, 51, 183, 87,
+    243, 80, 232, 164, 235, 60, 37, 162, 152, 106, 77, 43, 54, 241, 153, 165,
+    114, 165, 159, 217, 125, 225, 74, 243, 131, 193, 224, 180, 14, 15, 8, 20,
+  ])
+);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_LOAN_AMOUNT = 10;
 
@@ -86,6 +100,10 @@ describe("PawnHub", () => {
         LENDER_KEYPAIR.publicKey,
         10_000_000_000
       ),
+      "confirmed"
+    );
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(ADMIN_PDA, 1_000_000_000),
       "confirmed"
     );
 
@@ -628,7 +646,7 @@ describe("PawnHub", () => {
     });
   });
 
-  describe("Repay Loan - in Spl Token", () => {
+  describe("Repay Loan - in SPL Token", () => {
     let pawnLoan: any;
     let pawnTokenAccount: PublicKey;
 
@@ -657,7 +675,7 @@ describe("PawnHub", () => {
       );
     });
 
-    it("Repays loan amount from borrower to lender -- in Spl Token", async () => {
+    it("Repays loan amount from borrower to lender -- in SPL Token", async () => {
       const [borrowerBalanceBefore, lenderBalanceBefore] =
         await getBorrowerAndLenderTokenBalance(
           program,
@@ -827,6 +845,114 @@ describe("PawnHub", () => {
         borrowerPawnTokenAccountInfo?.data
       );
       assert.isTrue(decodedBorrowerPawnTokenAccountInfo?.amount.eq(new BN(1)));
+    });
+  });
+
+  describe("Withdraw admin fees", () => {
+    before(async () => {
+      // Tests above happen sequentially and don't accumulate any admin fee
+      await mintA.mintTo(adminMintATokenAccount, LENDER_KEYPAIR, [], 1_000_000);
+    });
+
+    it("Can withdraw - in SOL", async () => {
+      const beforeAdminAccountInfo =
+        await program.provider.connection.getAccountInfo(ADMIN_PDA);
+      if (!beforeAdminAccountInfo) {
+        assert.isNotNull(beforeAdminAccountInfo);
+        return;
+      }
+
+      await program.methods
+        .withdrawAdminFees()
+        .accounts({
+          feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
+          feeCollectorPaymentAccount: FEE_COLLECTOR_KEYPAIR.publicKey,
+          admin: ADMIN_PDA,
+          adminPaymentAccount: ADMIN_PDA,
+        })
+        .signers([FEE_COLLECTOR_KEYPAIR])
+        .rpc();
+
+      // Admin should be left rent exempt
+      const afterAdminAccountInfo =
+        await program.provider.connection.getAccountInfo(ADMIN_PDA);
+      if (!afterAdminAccountInfo) {
+        assert.isNotNull(afterAdminAccountInfo);
+        return;
+      }
+      const rentExemptThreshold =
+        await provider.connection.getMinimumBalanceForRentExemption(
+          afterAdminAccountInfo.data.length
+        );
+      assert.isTrue(afterAdminAccountInfo.lamports === rentExemptThreshold);
+
+      // fee collector received the SOL
+      const feeCollectorAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          FEE_COLLECTOR_KEYPAIR.publicKey
+        );
+      const expectedLamports =
+        beforeAdminAccountInfo.lamports - afterAdminAccountInfo.lamports;
+      assert.isTrue(feeCollectorAccountInfo?.lamports === expectedLamports);
+    });
+
+    it("Can withdraw - in SPL tokens", async () => {
+      const feeCollectorPaymentAccount = await Token.getAssociatedTokenAddress(
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        mintA.publicKey,
+        FEE_COLLECTOR_KEYPAIR.publicKey
+      );
+
+      const adminMintATokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          adminMintATokenAccount
+        );
+
+      const decodedAdminMintATokenAccountInfo = deserializeTokenAccountInfo(
+        adminMintATokenAccountInfo?.data
+      );
+      const availableAdminMintAFees = decodedAdminMintATokenAccountInfo?.amount;
+      if (!availableAdminMintAFees || availableAdminMintAFees.eq(new BN(0))) {
+        assert.ok(
+          false,
+          `availableAdminMintAFees cannot be null or zero but was: ${availableAdminMintAFees}`
+        );
+        return;
+      }
+
+      await program.methods
+        .withdrawAdminFees()
+        .accounts({
+          feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
+          feeCollectorPaymentAccount,
+          admin: ADMIN_PDA,
+          adminPaymentAccount: adminMintATokenAccount,
+        })
+        .preInstructions([
+          Token.createAssociatedTokenAccountInstruction(
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+            TOKEN_PROGRAM_ID,
+            mintA.publicKey,
+            feeCollectorPaymentAccount,
+            FEE_COLLECTOR_KEYPAIR.publicKey,
+            provider.wallet.publicKey
+          ),
+        ])
+        .signers([FEE_COLLECTOR_KEYPAIR])
+        .rpc();
+
+      const feeCollectorPaymentAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          feeCollectorPaymentAccount
+        );
+
+      const decodedFeeCollectorTokenAccount = deserializeTokenAccountInfo(
+        feeCollectorPaymentAccountInfo?.data
+      );
+      assert.isTrue(
+        decodedFeeCollectorTokenAccount?.amount.eq(availableAdminMintAFees)
+      );
     });
   });
 });

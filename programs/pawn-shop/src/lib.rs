@@ -13,6 +13,15 @@ mod native_mint {
     declare_id!("So11111111111111111111111111111111111111112");
 }
 
+/// The authority allowed to withdraw admin fees
+mod fee_collector {
+    use super::*;
+    #[cfg(feature = "mainnet")]
+    declare_id!("BUX7s2ef2htTGb2KKoPHWkmzxPj4nTWMWRgs5CSbQxf9"); // Raccoons multisig
+    #[cfg(not(feature = "mainnet"))]
+    declare_id!("HNodM9dfJf84YdVJQrjg6rSzHdb5WNbQo5xkvYBiNnLT"); // Test harcoded keypair, /!\ do not use in production
+}
+
 #[cfg(feature = "devnet")]
 declare_id!("6LPeFKNuZ39CRgHkoWsRZB8QWrvb8kPLs289G7bF6QgZ");
 
@@ -151,7 +160,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    /// Borrower pays back loan amount plus interest and gets the pawn back. 
+    /// Borrower pays back loan amount plus interest and gets the pawn back.
     /// Lender gets back loan amount plus interest minus admin fee.
     pub fn repay_loan(ctx: Context<RepayLoan>) -> Result<()> {
         {
@@ -303,7 +312,7 @@ pub mod pawn_shop {
         Ok(())
     }
 
-    /// Lender seizes pawn from program escrow when loan is overdue. 
+    /// Lender seizes pawn from program escrow when loan is overdue.
     pub fn seize_pawn(ctx: Context<SeizePawn>) -> Result<()> {
         {
             let unix_timestamp = Clock::get()?.unix_timestamp;
@@ -341,6 +350,52 @@ pub mod pawn_shop {
             pawn_mint: ctx.accounts.pawn_token_account.mint,
             pawn_amount: ctx.accounts.pawn_token_account.amount,
         });
+
+        Ok(())
+    }
+
+    /// Withdraw admin fees into the fee collector wallet.
+    pub fn withdraw_admin_fees(ctx: Context<WithdrawAdminFees>) -> Result<()> {
+        let admin_bump = unwrap_bump!(ctx, "admin");
+        let signer_seeds: &[&[&[u8]]] = &[&[b"admin".as_ref(), &[admin_bump]]];
+
+        if ctx.accounts.admin.key == ctx.accounts.admin_payment_account.key {
+            // Only withdraw what would leave the system program account rent exempt to avoid blocking repayments
+            let admin_account_info = ctx.accounts.admin.to_account_info();
+            let minimum_balance = Rent::get()?.minimum_balance(admin_account_info.data_len());
+            let amount = admin_account_info
+                .lamports()
+                .saturating_sub(minimum_balance);
+
+            system_program::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    system_program::Transfer {
+                        from: ctx.accounts.admin_payment_account.to_account_info(),
+                        to: ctx.accounts.fee_collector_payment_account.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                amount,
+            )?;
+        } else {
+            let admin_fee_token_account: Account<TokenAccount> =
+                Account::try_from(&ctx.accounts.admin_payment_account)?;
+            assert_keys_eq!(ctx.accounts.admin, admin_fee_token_account.owner);
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    token::Transfer {
+                        from: ctx.accounts.admin_payment_account.to_account_info(),
+                        to: ctx.accounts.fee_collector_payment_account.to_account_info(),
+                        authority: ctx.accounts.admin.to_account_info(),
+                    },
+                    signer_seeds,
+                ),
+                admin_fee_token_account.amount,
+            )?;
+        }
 
         Ok(())
     }
@@ -426,6 +481,22 @@ pub struct SeizePawn<'info> {
     #[account(mut)]
     pub lender_pawn_token_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawAdminFees<'info> {
+    #[account(address = fee_collector::ID)]
+    pub fee_collector: Signer<'info>,
+    /// CHECK: Receives the admin fees, can be the fee collector wallet or his spl token account
+    #[account(mut)]
+    pub fee_collector_payment_account: UncheckedAccount<'info>,
+    #[account(seeds = [b"admin"], bump)]
+    pub admin: SystemAccount<'info>,
+    /// CHECK: Sends the admin fees, can be the admin pda or a spl token account owned by the admin pda
+    #[account(mut)]
+    pub admin_payment_account: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq)]
@@ -594,12 +665,13 @@ mod tests {
                 .unwrap()
         );
     }
-    
+
     #[test]
     fn compute_admin_fee_positive_interest() {
         const POSITIVE_INTEREST: u64 = 100;
 
-        assert_eq!(ADMIN_FEE_BPS * POSITIVE_INTEREST / 10_000,
+        assert_eq!(
+            ADMIN_FEE_BPS * POSITIVE_INTEREST / 10_000,
             compute_admin_fee(POSITIVE_INTEREST, ADMIN_FEE_BPS).unwrap()
         );
     }
@@ -612,7 +684,10 @@ mod tests {
 
     #[test]
     fn compute_payoff_amount_is_correct() {
-        assert_eq!(1234 + 5678 - 10, compute_payoff_amount(1234, 5678, 10).unwrap());
+        assert_eq!(
+            1234 + 5678 - 10,
+            compute_payoff_amount(1234, 5678, 10).unwrap()
+        );
 
         // Overflow cases: one too much
         assert_eq!(None, compute_payoff_amount(u64::MAX, 1, 0));
