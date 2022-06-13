@@ -22,11 +22,14 @@ mod fee_collector {
     declare_id!("HNodM9dfJf84YdVJQrjg6rSzHdb5WNbQo5xkvYBiNnLT"); // Test harcoded keypair, /!\ do not use in production
 }
 
+#[cfg(not(any(feature = "devnet", feature = "mainnet")))]
+declare_id!("PawnShop11111111111111111111111111111111112");
+
 #[cfg(feature = "devnet")]
 declare_id!("6LPeFKNuZ39CRgHkoWsRZB8QWrvb8kPLs289G7bF6QgZ");
 
-#[cfg(not(feature = "devnet"))]
-declare_id!("PawnShop11111111111111111111111111111111112");
+#[cfg(feature = "mainnet")]
+declare_id!("PawnLnfQT8tszFmSqdJHb2377ou74z3p6R4Eu1FCeyL");
 
 #[program]
 pub mod pawn_shop {
