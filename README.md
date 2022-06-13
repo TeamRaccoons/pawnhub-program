@@ -20,6 +20,6 @@ Pawnhub is a P2P pawning platform.
 
 ## Deploy and verify
 
-`anchor build --verifiable -- --features mainnet`
+`anchor build --verifiable -p pawn_shop -- --features mainnet`
 
 ...
