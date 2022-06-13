@@ -1,9 +1,14 @@
+anchor_version = "0.23.0"
+
 [features]
 seeds = false
 
 [programs.localnet]
 pawn_shop = "PawnShop11111111111111111111111111111111112"
 faucet = "Faucet11111111111111111111111111111111111112"
+
+[programs.mainnet]
+pawn_shop = "PawnLnfQT8tszFmSqdJHb2377ou74z3p6R4Eu1FCeyL"
 
 [registry]
 url = "https://anchor.projectserum.com"

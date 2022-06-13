@@ -16,6 +16,10 @@ Pawnhub is a P2P pawning platform.
 
 - Download the spl token metadata program from mainnet
 
-```
-solana program dump metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s spl_token_metadata.so -um
-```
+`solana program dump metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s spl_token_metadata.so -um`
+
+## Deploy and verify
+
+`anchor build --verifiable -p pawn_shop -- --features mainnet`
+
+...
