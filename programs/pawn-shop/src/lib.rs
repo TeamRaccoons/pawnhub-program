@@ -2,6 +2,7 @@ use std::{cmp, convert::TryInto};
 
 use anchor_lang::{prelude::*, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
+use solana_security_txt::security_txt;
 use vipers::prelude::*;
 
 const ADMIN_FEE_BPS: u64 = 200; // 2%
@@ -696,4 +697,19 @@ mod tests {
         assert_eq!(None, compute_payoff_amount(u64::MAX, 1, 0));
         assert_eq!(None, compute_payoff_amount(u64::MAX, 2, 1));
     }
+}
+
+security_txt! {
+    // Required fields
+    name: "PawnHub",
+    project_url: "https://pawnhub.app/",
+    contacts: "email:security@raccoons.dev",
+    policy: "TODO",
+
+    // Optional Fields
+    preferred_languages: "en",
+    source_code: "https://github.com/TeamRaccoons/pawnhub-program/tree/main/programs/pawn-shop",
+    encryption: "None",
+    auditors: "None",
+    acknowledgements: ""
 }
