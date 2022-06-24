@@ -2,11 +2,12 @@ use std::{cmp, convert::TryInto};
 
 use anchor_lang::{prelude::*, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
+mod mpl_token_metadata;
 use vipers::prelude::*;
 
 const ADMIN_FEE_BPS: u64 = 200; // 2%
 const SECONDS_PER_YEAR: u64 = 31_536_000;
-const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500; //25%
+const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500; // 25%
 
 mod native_mint {
     use super::*;
@@ -47,10 +48,9 @@ pub mod pawn_shop {
 
             invariant!(amount != 0, PawnAmountIsZero);
 
-            pawn_loan.bump = unwrap_bump!(ctx, "pawn_token_account");
+            pawn_loan.bump = unwrap_bump!(ctx, "pawn-loan");
             pawn_loan.status = LoanStatus::Open;
             pawn_loan.borrower = ctx.accounts.borrower.key();
-            pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
             match &desired_terms {
                 Some(terms) => {
                     invariant!(terms.principal_amount != 0, InvalidLoanTerms);
@@ -78,7 +78,6 @@ pub mod pawn_shop {
         emit!(LoanRequested {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
             pawn_amount: amount,
         });
 
@@ -406,10 +405,10 @@ pub mod pawn_shop {
 
 #[derive(Accounts)]
 pub struct RequestLoan<'info> {
-    #[account(init, payer = borrower, space = PawnLoan::space())]
+    #[account(mut)]
+    pub base: Signer<'info>,
+    #[account(init, seeds = [base.key.as_ref(), b"pawn-loan".as_ref()], bump, payer = borrower, space = PawnLoan::space())]
     pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(init, seeds = [b"pawn-token-account", pawn_loan.key().as_ref()], bump, payer = borrower, token::mint = pawn_mint, token::authority = pawn_token_account)]
-    pub pawn_token_account: Account<'info, TokenAccount>,
     pub pawn_mint: Account<'info, Mint>,
     #[account(mut)]
     pub borrower: Signer<'info>,
@@ -438,7 +437,7 @@ pub struct UnderwriteLoan<'info> {
 
 #[derive(Accounts)]
 pub struct RepayLoan<'info> {
-    #[account(mut, has_one = borrower, has_one = pawn_token_account)]
+    #[account(mut, has_one = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
@@ -462,7 +461,7 @@ pub struct RepayLoan<'info> {
 
 #[derive(Accounts)]
 pub struct CancelLoan<'info> {
-    #[account(mut, has_one = borrower, has_one = pawn_token_account, close = borrower)]
+    #[account(mut, has_one = borrower, close = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
@@ -475,7 +474,7 @@ pub struct CancelLoan<'info> {
 
 #[derive(Accounts)]
 pub struct SeizePawn<'info> {
-    #[account(mut, has_one = lender, has_one = pawn_token_account)]
+    #[account(mut, has_one = lender)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
@@ -528,8 +527,9 @@ impl LoanTerms {
 #[derive(Copy)]
 pub struct PawnLoan {
     pub bump: u8,
+    pub base: Pubkey,
     pub borrower: Pubkey,
-    pub pawn_token_account: Pubkey,
+    pub pawn_mint: Pubkey,
     pub status: LoanStatus,
     pub lender: Pubkey,
     pub desired_terms: Option<LoanTerms>,
