@@ -3,7 +3,11 @@ import { BN, IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
 import { PublicKey, Keypair } from "@solana/web3.js";
 import { PawnShop } from "../target/types/pawn_shop";
 import { assert } from "chai";
-import { deserializeTokenAccountInfo } from "./utils";
+import {
+  deserializeTokenAccountInfo,
+  getAssociatedTokenAccount,
+} from "./utils";
+import { PROGRAM_ID as METAPLEX_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 
 import fs from "fs";
 
@@ -25,30 +29,47 @@ export type LoanTerms = IdlTypes<PawnShop>["LoanTerms"];
 
 export async function requestLoan(
   program: Program<PawnShop>,
-  pawnLoanKeypair: Keypair,
+  baseKeypair: Keypair,
   borrowerKeypair: Keypair,
-  pawnMint: PublicKey,
   borrowerPawnTokenAccount: PublicKey,
-  expectedDesiredTerms: LoanTerms
+  pawnMint: PublicKey,
+  desiredTerms: LoanTerms
 ) {
-  const pawnTokenAccount = findProgramAddressSync(
-    [Buffer.from("pawn-token-account"), pawnLoanKeypair.publicKey.toBuffer()],
+  const pawnLoan = findProgramAddressSync(
+    [baseKeypair.publicKey.toBuffer(), Buffer.from("pawn-loan")],
     program.programId
   )[0];
 
+  const [masterEdition] = await PublicKey.findProgramAddress(
+    [
+      Buffer.from("metadata"),
+      METAPLEX_PROGRAM_ID.toBuffer(),
+      pawnMint.toBuffer(),
+      Buffer.from("edition"),
+    ],
+    METAPLEX_PROGRAM_ID
+  );
+
+  console.log("pawnLoan:", pawnLoan.toBase58());
   const signature = await program.methods
-    .requestLoan(new BN(1), expectedDesiredTerms)
+    .requestLoan(desiredTerms)
     .accounts({
-      pawnLoan: pawnLoanKeypair.publicKey,
-      pawnTokenAccount,
-      pawnMint,
+      base: baseKeypair.publicKey,
+      pawnLoan,
       borrower: borrowerKeypair.publicKey,
-      borrowerPawnTokenAccount,
+      pawnTokenAccount: borrowerPawnTokenAccount,
+      pawnMint,
+      edition: masterEdition,
+      mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
     })
-    .signers([pawnLoanKeypair, borrowerKeypair])
+    .signers([baseKeypair, borrowerKeypair])
     .rpc();
 
-  return { signature, pawnTokenAccount };
+  return {
+    signature,
+    pawnLoanAddress: pawnLoan,
+    pawnTokenAccount: borrowerPawnTokenAccount,
+  };
 }
 
 export async function underwriteLoan(

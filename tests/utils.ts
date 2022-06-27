@@ -1,7 +1,10 @@
 import { Program } from "@project-serum/anchor";
+import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
 import {
   AccountInfo as TokenAccountInfo,
   AccountLayout,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
   u64,
 } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
@@ -76,3 +79,13 @@ export const getBorrowerAndLenderTokenBalance = async (
 export const delay = async (timeInMS: number) => {
   return new Promise((_) => setTimeout(_, timeInMS));
 };
+
+export function getAssociatedTokenAccount(
+  mint: PublicKey,
+  owner: PublicKey
+): PublicKey {
+  return findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  )[0];
+}
