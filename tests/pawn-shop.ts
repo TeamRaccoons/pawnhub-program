@@ -40,8 +40,9 @@ import {
 } from "@metaplex-foundation/mpl-token-metadata";
 import { set } from "@project-serum/anchor/dist/cjs/utils/features";
 
-// set("debug-logs");
+set("debug-logs");
 
+let pawnLoanAddress: PublicKey;
 const BORROWER_KEYPAIR = new Keypair();
 const LENDER_KEYPAIR = new Keypair();
 const FEE_COLLECTOR_KEYPAIR = Keypair.fromSecretKey(
@@ -235,7 +236,7 @@ describe("PawnHub", () => {
 
   describe("Request Loan", () => {
     it("Saves terms in pawn loan account ", async () => {
-      const { pawnLoanAddress } = await requestLoan(
+      const result = await requestLoan(
         program,
         baseKeypair,
         BORROWER_KEYPAIR,
@@ -243,6 +244,7 @@ describe("PawnHub", () => {
         pawnMint.publicKey,
         TERMS_VALID
       );
+      pawnLoanAddress = result.pawnLoan;
 
       const pawnLoan = await program.account.pawnLoan.fetch(pawnLoanAddress);
       const desiredTerms = pawnLoan.desiredTerms;
@@ -262,42 +264,26 @@ describe("PawnHub", () => {
       assert.isNull(pawnLoan.terms);
     });
 
-    it("Moves NFT to program escrow", async () => {
-      const pawnTokenAccount = findProgramAddressSync(
-        [
-          Buffer.from("pawn-token-account"),
-          pawnLoanKeypair.publicKey.toBuffer(),
-        ],
-        program.programId
-      )[0];
+    it("Freezes NFT into its original account under the pawn loan's control", async () => {
+      const { pawnTokenAccount, pawnLoan } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      );
 
       const pawnTokenAccountInfo =
         await program.provider.connection.getAccountInfo(pawnTokenAccount);
 
-      // Before: Mint is in borrower pawn token account.
-      assert.strictEqual(
-        (
-          await pawnMint.getAccountInfo(borrowerPawnTokenAccount)
-        ).amount.toNumber(),
-        1
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
       );
-      // Before: Pawn token account not created yet.
-      assert.isNull(pawnTokenAccountInfo);
+      console.log(decodedPawnTokenAccountInfo);
 
-      await requestLoan(
-        program,
-        pawnLoanKeypair,
-        BORROWER_KEYPAIR,
-        pawnMint.publicKey,
-        borrowerPawnTokenAccount,
-        TERMS_VALID
-      );
-
-      // After: Mint moved to program escrow.
-      assert.strictEqual(
-        (await pawnMint.getAccountInfo(pawnTokenAccount)).amount.toNumber(),
-        1
-      );
+      assert.isTrue(decodedPawnTokenAccountInfo.isFrozen);
+      assert.isTrue(decodedPawnTokenAccountInfo.delegate?.equals(pawnLoan));
     });
 
     it("Should throw if invalid principal requested", async () => {
@@ -307,9 +293,10 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
@@ -321,9 +308,10 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
@@ -335,9 +323,10 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
@@ -1029,18 +1018,19 @@ describe("PawnHub", () => {
 
 async function testInvalidTerms(
   program: Program<PawnShop>,
-  pawnLoanKeypair: Keypair,
-  pawnMint: Token,
+  baseKeypair: Keypair,
+  borrowerKeypair: Keypair,
   borrowerPawnTokenAccount: PublicKey,
+  pawnMint: PublicKey,
   termsInvalid: LoanTerms
 ) {
   try {
     await requestLoan(
       program,
-      pawnLoanKeypair,
-      BORROWER_KEYPAIR,
-      pawnMint.publicKey,
+      baseKeypair,
+      borrowerKeypair,
       borrowerPawnTokenAccount,
+      pawnMint,
       termsInvalid
     );
     assert.ok(false);

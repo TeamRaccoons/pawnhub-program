@@ -67,7 +67,7 @@ export async function requestLoan(
 
   return {
     signature,
-    pawnLoanAddress: pawnLoan,
+    pawnLoan,
     pawnTokenAccount: borrowerPawnTokenAccount,
   };
 }
