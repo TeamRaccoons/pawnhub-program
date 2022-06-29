@@ -1,12 +1,8 @@
 import { findProgramAddressSync } from "@project-serum/anchor/dist/cjs/utils/pubkey";
 import { BN, IdlAccounts, IdlTypes, Program } from "@project-serum/anchor";
-import { PublicKey, Keypair } from "@solana/web3.js";
+import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { PawnShop } from "../target/types/pawn_shop";
 import { assert } from "chai";
-import {
-  deserializeTokenAccountInfo,
-  getAssociatedTokenAccount,
-} from "./utils";
 import { PROGRAM_ID as METAPLEX_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 
 import fs from "fs";
@@ -36,21 +32,10 @@ export async function requestLoan(
   desiredTerms: LoanTerms
 ) {
   const pawnLoan = findProgramAddressSync(
-    [baseKeypair.publicKey.toBuffer(), Buffer.from("pawn-loan")],
+    [baseKeypair.publicKey.toBuffer(), Buffer.from("pawn_loan")],
     program.programId
   )[0];
 
-  const [masterEdition] = await PublicKey.findProgramAddress(
-    [
-      Buffer.from("metadata"),
-      METAPLEX_PROGRAM_ID.toBuffer(),
-      pawnMint.toBuffer(),
-      Buffer.from("edition"),
-    ],
-    METAPLEX_PROGRAM_ID
-  );
-
-  console.log("pawnLoan:", pawnLoan.toBase58());
   const signature = await program.methods
     .requestLoan(desiredTerms)
     .accounts({
@@ -59,7 +44,7 @@ export async function requestLoan(
       borrower: borrowerKeypair.publicKey,
       pawnTokenAccount: borrowerPawnTokenAccount,
       pawnMint,
-      edition: masterEdition,
+      edition: findMasterEditionPda(pawnMint),
       mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
     })
     .signers([baseKeypair, borrowerKeypair])
@@ -74,34 +59,24 @@ export async function requestLoan(
 
 export async function underwriteLoan(
   program: Program<PawnShop>,
-  pawnLoan: PawnLoan,
-  pawnLoanKeypair: Keypair,
-  pawnTokenAccount: PublicKey,
+  pawnLoanAddress: PublicKey,
+  pawnLoanState: PawnLoan,
   lenderKeypair: Keypair,
   lenderPaymentAccount: PublicKey,
   borrowerPaymentAccount: PublicKey
 ) {
-  const pawnTokenAccountInfo = await program.provider.connection.getAccountInfo(
-    pawnTokenAccount
-  );
-  const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
-    pawnTokenAccountInfo?.data
-  );
-
-  const expectedPawnMint = decodedPawnTokenAccountInfo?.mint;
-  const expectedDesiredTerms = pawnLoan.desiredTerms;
+  const expectedDesiredTerms = pawnLoanState.desiredTerms;
   assert.isNotNull(expectedDesiredTerms);
-  assert.isNotNull(expectedPawnMint);
-  // To silence typescript null warning. Nulls should still throw instead of exiting.
-  if (!expectedDesiredTerms || !expectedPawnMint) {
+
+  // To silence typescript null warning. nulls should still throw instead of exiting.
+  if (!expectedDesiredTerms) {
     return;
   }
 
   const tx = await program.methods
-    .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(1))
+    .underwriteLoan(expectedDesiredTerms, pawnLoanState.pawnMint)
     .accounts({
-      pawnLoan: pawnLoanKeypair.publicKey,
-      pawnTokenAccount,
+      pawnLoan: pawnLoanAddress,
       lender: lenderKeypair.publicKey,
       lenderPaymentAccount: lenderPaymentAccount,
       borrowerPaymentAccount: borrowerPaymentAccount,
@@ -113,21 +88,18 @@ export async function underwriteLoan(
 // Borrower, lender and admin payment accounts are the wallet pk
 export async function repayLoanInSol(
   program: Program<PawnShop>,
-  pawnLoanKeypair: Keypair,
-  pawnTokenAccount: PublicKey,
+  pawnLoanAddress: PublicKey,
+  pawnLoanState: PawnLoan,
   borrowerKeypair: Keypair,
-  borrowerPawnTokenAccount: PublicKey,
-  lenderWallet: PublicKey,
   adminPda: PublicKey
 ) {
   return await repayLoan(
     program,
-    pawnLoanKeypair,
-    pawnTokenAccount,
+    pawnLoanAddress,
+    pawnLoanState,
     borrowerKeypair,
     borrowerKeypair.publicKey /** borrowerPaymentAccount */,
-    borrowerPawnTokenAccount,
-    lenderWallet /** lenderPaymentAccount */,
+    pawnLoanState.lender /** lenderPaymentAccount */,
     adminPda /** admin pda */,
     adminPda /** adminPaymenAccount */
   );
@@ -135,11 +107,10 @@ export async function repayLoanInSol(
 
 export async function repayLoan(
   program: Program<PawnShop>,
-  pawnLoanKeypair: Keypair,
-  pawnTokenAccount: PublicKey,
+  pawnLoanAddress: PublicKey,
+  pawnLoanState: PawnLoan,
   borrowerKeypair: Keypair,
   borrowerPaymentAccount: PublicKey,
-  borrowerPawnTokenAccount: PublicKey,
   lenderPaymentAccount: PublicKey,
   adminPda: PublicKey,
   adminPaymentAccount: PublicKey
@@ -147,14 +118,16 @@ export async function repayLoan(
   return await program.methods
     .repayLoan()
     .accounts({
-      pawnLoan: pawnLoanKeypair.publicKey,
-      pawnTokenAccount,
+      pawnLoan: pawnLoanAddress,
+      pawnTokenAccount: pawnLoanState.pawnTokenAccount,
+      pawnMint: pawnLoanState.pawnMint,
+      edition: findMasterEditionPda(pawnLoanState.pawnMint),
       borrower: borrowerKeypair.publicKey,
       borrowerPaymentAccount,
-      borrowerPawnTokenAccount,
       lenderPaymentAccount,
       admin: adminPda,
       adminPaymentAccount,
+      mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
     })
     .signers([borrowerKeypair])
     .rpc();
@@ -162,19 +135,35 @@ export async function repayLoan(
 
 export async function seizePawn(
   program: Program<PawnShop>,
-  pawnLoan: PublicKey,
-  pawnTokenAccount: PublicKey,
+  pawnLoanAddress: PublicKey,
+  pawnLoanState: PawnLoan,
   lenderKeypair: Keypair,
   lenderPawnTokenAccount: PublicKey
 ) {
   return await program.methods
     .seizePawn()
     .accounts({
-      pawnLoan,
-      pawnTokenAccount,
+      pawnLoan: pawnLoanAddress,
+      pawnTokenAccount: pawnLoanState.pawnTokenAccount,
+      pawnMint: pawnLoanState.pawnMint,
+      edition: findMasterEditionPda(pawnLoanState.pawnMint),
       lender: lenderKeypair.publicKey,
       lenderPawnTokenAccount,
+      mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
     })
     .signers([lenderKeypair])
     .rpc();
+}
+
+export function findMasterEditionPda(mint: PublicKey): PublicKey {
+  const [masterEdition] = findProgramAddressSync(
+    [
+      Buffer.from("metadata"),
+      METAPLEX_PROGRAM_ID.toBuffer(),
+      mint.toBuffer(),
+      Buffer.from("edition"),
+    ],
+    METAPLEX_PROGRAM_ID
+  );
+  return masterEdition;
 }

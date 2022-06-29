@@ -21,28 +21,19 @@ import {
   requestLoan,
   seizePawn,
   underwriteLoan,
+  findMasterEditionPda,
 } from "./pawn-shop-sdk";
 import { PawnShop } from "../target/types/pawn_shop";
+import { PublicKey, Keypair, AccountInfo, Transaction } from "@solana/web3.js";
 import {
-  PublicKey,
-  Keypair,
-  AccountInfo,
-  Transaction,
-  SystemProgram,
-} from "@solana/web3.js";
-import {
-  createCreateMetadataAccountV3Instruction,
-  createCreateMasterEditionInstruction,
-  Metadata,
   PROGRAM_ID as METAPLEX_PROGRAM_ID,
   createCreateMasterEditionV3Instruction,
   createCreateMetadataAccountV2Instruction,
 } from "@metaplex-foundation/mpl-token-metadata";
-import { set } from "@project-serum/anchor/dist/cjs/utils/features";
 
-set("debug-logs");
+// import { set } from "@project-serum/anchor/dist/cjs/utils/features";
+// set("debug-logs");
 
-let pawnLoanAddress: PublicKey;
 const BORROWER_KEYPAIR = new Keypair();
 const LENDER_KEYPAIR = new Keypair();
 const FEE_COLLECTOR_KEYPAIR = Keypair.fromSecretKey(
@@ -236,7 +227,7 @@ describe("PawnHub", () => {
 
   describe("Request Loan", () => {
     it("Saves terms in pawn loan account ", async () => {
-      const result = await requestLoan(
+      const { pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
         baseKeypair,
         BORROWER_KEYPAIR,
@@ -244,12 +235,13 @@ describe("PawnHub", () => {
         pawnMint.publicKey,
         TERMS_VALID
       );
-      pawnLoanAddress = result.pawnLoan;
 
-      const pawnLoan = await program.account.pawnLoan.fetch(pawnLoanAddress);
-      const desiredTerms = pawnLoan.desiredTerms;
+      const pawnLoanState = await program.account.pawnLoan.fetch(
+        pawnLoanAddress
+      );
+      const desiredTerms = pawnLoanState.desiredTerms;
 
-      assert.isTrue(pawnLoan.borrower.equals(BORROWER_KEYPAIR.publicKey));
+      assert.isTrue(pawnLoanState.borrower.equals(BORROWER_KEYPAIR.publicKey));
       assert.isTrue(
         desiredTerms?.principalAmount.eq(TERMS_VALID.principalAmount)
       );
@@ -261,7 +253,7 @@ describe("PawnHub", () => {
       );
       assert.isTrue(desiredTerms?.duration.eq(TERMS_VALID.duration));
       // These terms are only set when the loan is underwritten.
-      assert.isNull(pawnLoan.terms);
+      assert.isNull(pawnLoanState.terms);
     });
 
     it("Freezes NFT into its original account under the pawn loan's control", async () => {
@@ -280,10 +272,9 @@ describe("PawnHub", () => {
       const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
         pawnTokenAccountInfo?.data
       );
-      console.log(decodedPawnTokenAccountInfo);
 
-      assert.isTrue(decodedPawnTokenAccountInfo.isFrozen);
-      assert.isTrue(decodedPawnTokenAccountInfo.delegate?.equals(pawnLoan));
+      assert.isTrue(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isTrue(decodedPawnTokenAccountInfo?.delegate?.equals(pawnLoan));
     });
 
     it("Should throw if invalid principal requested", async () => {
@@ -332,688 +323,634 @@ describe("PawnHub", () => {
     });
   });
 
-  // describe("Underwrite Loan - in SOL", () => {
-  //   let pawnLoan: any;
-  //   let pawnTokenAccount: PublicKey;
-  //   let pawnTokenAccountInfo: AccountInfo<Buffer> | null;
-
-  //   let expectedDesiredTerms: LoanTerms;
-  //   let expectedPawnMint: PublicKey | undefined;
-
-  //   beforeEach(async () => {
-  //     ({ pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       TERMS_VALID
-  //     ));
-
-  //     pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-
-  //     pawnTokenAccountInfo = await program.provider.connection.getAccountInfo(
-  //       pawnTokenAccount
-  //     );
-  //     const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
-  //       pawnTokenAccountInfo?.data
-  //     );
-  //     expectedPawnMint = decodedPawnTokenAccountInfo?.mint;
-  //     expectedDesiredTerms = pawnLoan.desiredTerms;
-  //   });
-
-  //   it("Sets terms for underwritten loan", async () => {
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       LENDER_KEYPAIR.publicKey,
-  //       BORROWER_KEYPAIR.publicKey
-  //     );
-
-  //     const pawnLoanAfter = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-  //     const terms = pawnLoanAfter.terms;
-
-  //     assert.isTrue(
-  //       terms?.principalAmount.eq(expectedDesiredTerms.principalAmount)
-  //     );
-  //     assert.isTrue(pawnLoanAfter.lender.equals(LENDER_KEYPAIR.publicKey));
-  //   });
-
-  //   it("Transfers the loan amount from lender to the borrower -- in SOL", async () => {
-  //     const [borrowerBalanceBefore, lenderBalanceBefore] =
-  //       await getBorrowerAndLenderSolBalance(
-  //         program,
-  //         pawnLoan.borrower,
-  //         LENDER_KEYPAIR.publicKey
-  //       );
-
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       LENDER_KEYPAIR.publicKey,
-  //       BORROWER_KEYPAIR.publicKey
-  //     );
-
-  //     const [borrowerBalanceAfter, lenderBalanceAfter] =
-  //       await getBorrowerAndLenderSolBalance(
-  //         program,
-  //         pawnLoan.borrower,
-  //         LENDER_KEYPAIR.publicKey
-  //       );
-
-  //     assert.strictEqual(
-  //       borrowerBalanceBefore + DEFAULT_LOAN_AMOUNT,
-  //       borrowerBalanceAfter
-  //     );
-  //     assert.strictEqual(
-  //       lenderBalanceBefore,
-  //       lenderBalanceAfter + DEFAULT_LOAN_AMOUNT
-  //     );
-  //   });
-
-  //   it("Throws error if loan status is not open", async () => {
-  //     // This will move status from open to active.
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       LENDER_KEYPAIR.publicKey,
-  //       BORROWER_KEYPAIR.publicKey
-  //     );
-
-  //     try {
-  //       await underwriteLoan(
-  //         program,
-  //         pawnLoan,
-  //         pawnLoanKeypair,
-  //         pawnTokenAccount,
-  //         LENDER_KEYPAIR,
-  //         LENDER_KEYPAIR.publicKey,
-  //         BORROWER_KEYPAIR.publicKey
-  //       );
-  //       assert.ok(false);
-  //     } catch (e) {
-  //       let err = e as AnchorError;
-  //       assert.strictEqual(err.error.errorMessage, "InvalidLoanStatus");
-  //     }
-  //   });
-
-  //   it("Throws error if desired loan terms not matched", async () => {
-  //     let badDesiredTerms = expectedDesiredTerms;
-  //     badDesiredTerms.principalAmount = new BN(500);
-
-  //     assert.isNotNull(expectedPawnMint);
-  //     if (!expectedPawnMint) {
-  //       return;
-  //     }
-
-  //     try {
-  //       await program.methods
-  //         .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(1))
-  //         .accounts({
-  //           pawnLoan: pawnLoanKeypair.publicKey,
-  //           pawnTokenAccount,
-  //           lender: LENDER_KEYPAIR.publicKey,
-  //           lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
-  //           borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
-  //         })
-  //         .signers([LENDER_KEYPAIR])
-  //         .rpc();
-  //       assert.ok(false);
-  //     } catch (e) {
-  //       const err = e as AnchorError;
-  //       assert.strictEqual(err.error.errorMessage, "UnexpectedDesiredTerms");
-  //     }
-  //   });
-
-  //   it("Throws error if desired loan mint not matched", async () => {
-  //     try {
-  //       await program.methods
-  //         .underwriteLoan(expectedDesiredTerms, mintA.publicKey, new BN(1))
-  //         .accounts({
-  //           pawnLoan: pawnLoanKeypair.publicKey,
-  //           pawnTokenAccount,
-  //           lender: LENDER_KEYPAIR.publicKey,
-  //           lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
-  //           borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
-  //         })
-  //         .signers([LENDER_KEYPAIR])
-  //         .rpc();
-  //       assert.ok(false);
-  //     } catch (e) {
-  //       const err = e as AnchorError;
-  //       assert.strictEqual(err.error.errorMessage, "UnexpectedPawnMint");
-  //     }
-  //   });
-
-  //   it("Throws error if desired loan amount not matched", async () => {
-  //     assert.isNotNull(expectedPawnMint);
-  //     if (!expectedPawnMint) {
-  //       return;
-  //     }
-
-  //     try {
-  //       await program.methods
-  //         .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(100))
-  //         .accounts({
-  //           pawnLoan: pawnLoanKeypair.publicKey,
-  //           pawnTokenAccount,
-  //           lender: LENDER_KEYPAIR.publicKey,
-  //           lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
-  //           borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
-  //         })
-  //         .signers([LENDER_KEYPAIR])
-  //         .rpc();
-  //       assert.ok(false);
-  //     } catch (e) {
-  //       const err = e as AnchorError;
-  //       assert.strictEqual(err.error.errorMessage, "UnexpectedPawnAmount");
-  //     }
-  //   });
-  // });
-
-  // describe("Underwrite Loan - in SPL Token", () => {
-  //   let pawnLoan: any;
-  //   let pawnTokenAccount: PublicKey;
-
-  //   beforeEach(async () => {
-  //     ({ pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       termsUsdc
-  //     ));
-
-  //     pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-  //   });
-
-  //   it("Transfers the loan amount from lender to the borrower -- in SPL token", async () => {
-  //     const [borrowerBalanceBefore, lenderBalanceBefore] =
-  //       await getBorrowerAndLenderTokenBalance(
-  //         program,
-  //         borrowerMintATokenAccount,
-  //         lenderMintATokenAccount
-  //       );
-
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       lenderMintATokenAccount,
-  //       borrowerMintATokenAccount
-  //     );
-
-  //     const [borrowerBalanceAfter, lenderBalanceAfter] =
-  //       await getBorrowerAndLenderTokenBalance(
-  //         program,
-  //         borrowerMintATokenAccount,
-  //         lenderMintATokenAccount
-  //       );
-
-  //     // To silence typescript null warning
-  //     if (borrowerBalanceBefore === null || lenderBalanceAfter == null) {
-  //       assert.ok(false);
-  //       return;
-  //     }
-
-  //     assert.strictEqual(
-  //       borrowerBalanceBefore + DEFAULT_LOAN_AMOUNT,
-  //       borrowerBalanceAfter
-  //     );
-  //     assert.strictEqual(
-  //       lenderBalanceBefore,
-  //       lenderBalanceAfter + DEFAULT_LOAN_AMOUNT
-  //     );
-  //   });
-  // });
-
-  // describe("Repay Loan - in SOL", () => {
-  //   let pawnLoan: any;
-  //   let pawnTokenAccount: PublicKey;
-
-  //   beforeEach(async () => {
-  //     ({ pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       TERMS_VALID
-  //     ));
-
-  //     pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       LENDER_KEYPAIR.publicKey,
-  //       BORROWER_KEYPAIR.publicKey
-  //     );
-  //   });
-
-  //   it("Repays loan amount from borrower to lender -- in SOL", async () => {
-  //     const [borrowerBalanceBefore, lenderBalanceBefore] =
-  //       await getBorrowerAndLenderSolBalance(
-  //         program,
-  //         BORROWER_KEYPAIR.publicKey,
-  //         LENDER_KEYPAIR.publicKey
-  //       );
-
-  //     await repayLoanInSol(
-  //       program,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       BORROWER_KEYPAIR,
-  //       borrowerPawnTokenAccount,
-  //       LENDER_KEYPAIR.publicKey,
-  //       ADMIN_PDA
-  //     );
-
-  //     const [borrowerBalanceAfter, lenderBalanceAfter] =
-  //       await getBorrowerAndLenderSolBalance(
-  //         program,
-  //         BORROWER_KEYPAIR.publicKey,
-  //         LENDER_KEYPAIR.publicKey
-  //       );
-
-  //     // To silence typescript null warning
-  //     if (borrowerBalanceBefore === null || lenderBalanceAfter == null) {
-  //       assert.ok(false);
-  //       return;
-  //     }
-
-  //     assert.strictEqual(
-  //       borrowerBalanceBefore - borrowerBalanceAfter,
-  //       lenderBalanceAfter - lenderBalanceBefore
-  //     );
-  //   });
-
-  //   it("Throws error if non-borrower tries to repay", async () => {
-  //     try {
-  //       await repayLoanInSol(
-  //         program,
-  //         pawnLoanKeypair,
-  //         pawnTokenAccount,
-  //         LENDER_KEYPAIR,
-  //         borrowerPawnTokenAccount,
-  //         LENDER_KEYPAIR.publicKey,
-  //         ADMIN_PDA
-  //       );
-  //       assert.ok(false);
-  //     } catch (_err) {
-  //       assert.isTrue(_err instanceof AnchorError);
-  //       const err = _err as AnchorError;
-  //       assert.strictEqual(err.error.errorCode.number, 2001);
-  //       assert.strictEqual(
-  //         err.error.errorMessage,
-  //         "A has one constraint was violated"
-  //       );
-  //     }
-  //   });
-
-  //   it("Throws if repayment happens when loan is not active", async () => {
-  //     // Status moves from active to repaid
-  //     await repayLoanInSol(
-  //       program,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       BORROWER_KEYPAIR,
-  //       borrowerPawnTokenAccount,
-  //       LENDER_KEYPAIR.publicKey,
-  //       ADMIN_PDA
-  //     );
-  //     try {
-  //       await repayLoanInSol(
-  //         program,
-  //         pawnLoanKeypair,
-  //         pawnTokenAccount,
-  //         BORROWER_KEYPAIR,
-  //         borrowerPawnTokenAccount,
-  //         LENDER_KEYPAIR.publicKey,
-  //         ADMIN_PDA
-  //       );
-  //       assert.ok(false);
-  //     } catch (_err) {
-  //       assert.isTrue(_err instanceof AnchorError);
-  //       const err = _err as AnchorError;
-  //       assert.strictEqual(err.error.errorCode.number, 6003);
-  //       assert.strictEqual(err.error.errorMessage, "InvalidLoanStatus");
-  //     }
-  //   });
-  // });
-
-  // describe("Repay Loan - in SPL Token", () => {
-  //   let pawnLoan: any;
-  //   let pawnTokenAccount: PublicKey;
-
-  //   beforeEach(async () => {
-  //     ({ pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       termsUsdc
-  //     ));
-
-  //     pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       lenderMintATokenAccount,
-  //       borrowerMintATokenAccount
-  //     );
-  //   });
-
-  //   it("Repays loan amount from borrower to lender -- in SPL Token", async () => {
-  //     const [borrowerBalanceBefore, lenderBalanceBefore] =
-  //       await getBorrowerAndLenderTokenBalance(
-  //         program,
-  //         borrowerMintATokenAccount,
-  //         lenderMintATokenAccount
-  //       );
-
-  //     await repayLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       BORROWER_KEYPAIR,
-  //       borrowerMintATokenAccount,
-  //       borrowerPawnTokenAccount,
-  //       lenderMintATokenAccount,
-  //       ADMIN_PDA,
-  //       adminMintATokenAccount
-  //     );
-  //     const [borrowerBalanceAfter, lenderBalanceAfter] =
-  //       await getBorrowerAndLenderTokenBalance(
-  //         program,
-  //         borrowerMintATokenAccount,
-  //         lenderMintATokenAccount
-  //       );
-  //     // To silence typescript null warning
-  //     if (
-  //       borrowerBalanceBefore === null ||
-  //       borrowerBalanceAfter === null ||
-  //       lenderBalanceBefore === null ||
-  //       lenderBalanceAfter === null
-  //     ) {
-  //       assert.ok(false);
-  //       return;
-  //     }
-  //     assert.strictEqual(
-  //       borrowerBalanceBefore - borrowerBalanceAfter,
-  //       lenderBalanceAfter - lenderBalanceBefore
-  //     );
-  //   });
-  // });
-
-  // describe("Seize Pawn", () => {
-  //   let pawnLoan: any;
-  //   let pawnTokenAccount: PublicKey;
-
-  //   beforeEach(async () => {
-  //     ({ pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       TERMS_SUPER_SHORT_LOAN
-  //     ));
-
-  //     pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-
-  //     await underwriteLoan(
-  //       program,
-  //       pawnLoan,
-  //       pawnLoanKeypair,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       LENDER_KEYPAIR.publicKey,
-  //       BORROWER_KEYPAIR.publicKey
-  //     );
-  //   });
-
-  //   it("Throws error if attempt to seize before due", async () => {
-  //     try {
-  //       await seizePawn(
-  //         program,
-  //         pawnLoanKeypair.publicKey,
-  //         pawnTokenAccount,
-  //         LENDER_KEYPAIR,
-  //         lenderPawnTokenAccount
-  //       );
-  //       assert.ok(false);
-  //     } catch (_err) {
-  //       assert.isTrue(_err instanceof AnchorError);
-  //       const err = _err as AnchorError;
-  //       assert.strictEqual(err.error.errorCode.number, 6008);
-  //       assert.strictEqual(err.error.errorMessage, "CannotSeizeBeforeExpiry");
-  //     }
-  //   });
-
-  //   it("Seizing should update status and transfer mint to lender", async () => {
-  //     await delay(2000);
-  //     await seizePawn(
-  //       program,
-  //       pawnLoanKeypair.publicKey,
-  //       pawnTokenAccount,
-  //       LENDER_KEYPAIR,
-  //       lenderPawnTokenAccount
-  //     );
-  //     const pawnLoan = await program.account.pawnLoan.fetch(
-  //       pawnLoanKeypair.publicKey
-  //     );
-
-  //     // Unsure why pawnLoan status enum shows up as {defaulted: {}}
-  //     assert.strictEqual(Object.keys(pawnLoan.status)[0], "defaulted");
-
-  //     const lenderPawnTokenAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         lenderPawnTokenAccount
-  //       );
-
-  //     const decodedlenderPawnTokenAccountInfo = deserializeTokenAccountInfo(
-  //       lenderPawnTokenAccountInfo?.data
-  //     );
-  //     if (!pawnLoan.terms?.mint) {
-  //       assert.ok(false);
-  //       return;
-  //     }
-  //     // Pawn mint transferred to lender account
-  //     assert.isTrue(
-  //       decodedlenderPawnTokenAccountInfo?.mint.equals(pawnMint.publicKey)
-  //     );
-  //     assert.strictEqual(
-  //       decodedlenderPawnTokenAccountInfo?.amount.toNumber(),
-  //       1
-  //     );
-  //   });
-  // });
-
-  // describe("Cancel Loan", () => {
-  //   it("Cancel loan", async () => {
-  //     const { pawnTokenAccount } = await requestLoan(
-  //       program,
-  //       pawnLoanKeypair,
-  //       BORROWER_KEYPAIR,
-  //       pawnMint.publicKey,
-  //       borrowerPawnTokenAccount,
-  //       TERMS_VALID
-  //     );
-
-  //     await program.methods
-  //       .cancelLoan()
-  //       .accounts({
-  //         pawnLoan: pawnLoanKeypair.publicKey,
-  //         pawnTokenAccount,
-  //         borrower: BORROWER_KEYPAIR.publicKey,
-  //         borrowerPawnTokenAccount,
-  //       })
-  //       .signers([BORROWER_KEYPAIR])
-  //       .rpc();
-
-  //     // Relevant accounts should be zeroed (back to system program and no lamports) and pawn back in wallet
-  //     const pawnLoanAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         pawnLoanKeypair.publicKey
-  //       );
-  //     assert.isNull(pawnLoanAccountInfo);
-
-  //     const pawnTokenAccountInfo =
-  //       await program.provider.connection.getAccountInfo(pawnTokenAccount);
-  //     assert.isNull(pawnTokenAccountInfo);
-
-  //     const borrowerPawnTokenAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         borrowerPawnTokenAccount
-  //       );
-
-  //     const decodedBorrowerPawnTokenAccountInfo = deserializeTokenAccountInfo(
-  //       borrowerPawnTokenAccountInfo?.data
-  //     );
-  //     assert.isTrue(decodedBorrowerPawnTokenAccountInfo?.amount.eq(new BN(1)));
-  //   });
-  // });
-
-  // describe("Withdraw admin fees", () => {
-  //   before(async () => {
-  //     // Tests above happen sequentially and don't accumulate any admin fee
-  //     await mintA.mintTo(adminMintATokenAccount, LENDER_KEYPAIR, [], 1_000_000);
-  //   });
-
-  //   it("Can withdraw - in SOL", async () => {
-  //     const beforeAdminAccountInfo =
-  //       await program.provider.connection.getAccountInfo(ADMIN_PDA);
-  //     if (!beforeAdminAccountInfo) {
-  //       assert.isNotNull(beforeAdminAccountInfo);
-  //       return;
-  //     }
-
-  //     await program.methods
-  //       .withdrawAdminFees()
-  //       .accounts({
-  //         feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
-  //         feeCollectorPaymentAccount: FEE_COLLECTOR_KEYPAIR.publicKey,
-  //         admin: ADMIN_PDA,
-  //         adminPaymentAccount: ADMIN_PDA,
-  //       })
-  //       .signers([FEE_COLLECTOR_KEYPAIR])
-  //       .rpc();
-
-  //     // Admin should be left rent exempt
-  //     const afterAdminAccountInfo =
-  //       await program.provider.connection.getAccountInfo(ADMIN_PDA);
-  //     if (!afterAdminAccountInfo) {
-  //       assert.isNotNull(afterAdminAccountInfo);
-  //       return;
-  //     }
-  //     const rentExemptThreshold =
-  //       await provider.connection.getMinimumBalanceForRentExemption(
-  //         afterAdminAccountInfo.data.length
-  //       );
-  //     assert.isTrue(afterAdminAccountInfo.lamports === rentExemptThreshold);
-
-  //     // fee collector received the SOL
-  //     const feeCollectorAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         FEE_COLLECTOR_KEYPAIR.publicKey
-  //       );
-  //     const expectedLamports =
-  //       beforeAdminAccountInfo.lamports - afterAdminAccountInfo.lamports;
-  //     assert.isTrue(feeCollectorAccountInfo?.lamports === expectedLamports);
-  //   });
-
-  //   it("Can withdraw - in SPL tokens", async () => {
-  //     const feeCollectorPaymentAccount = await Token.getAssociatedTokenAddress(
-  //       ASSOCIATED_TOKEN_PROGRAM_ID,
-  //       TOKEN_PROGRAM_ID,
-  //       mintA.publicKey,
-  //       FEE_COLLECTOR_KEYPAIR.publicKey
-  //     );
-
-  //     const adminMintATokenAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         adminMintATokenAccount
-  //       );
-
-  //     const decodedAdminMintATokenAccountInfo = deserializeTokenAccountInfo(
-  //       adminMintATokenAccountInfo?.data
-  //     );
-  //     const availableAdminMintAFees = decodedAdminMintATokenAccountInfo?.amount;
-  //     if (!availableAdminMintAFees || availableAdminMintAFees.eq(new BN(0))) {
-  //       assert.ok(
-  //         false,
-  //         `availableAdminMintAFees cannot be null or zero but was: ${availableAdminMintAFees}`
-  //       );
-  //       return;
-  //     }
-
-  //     await program.methods
-  //       .withdrawAdminFees()
-  //       .accounts({
-  //         feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
-  //         feeCollectorPaymentAccount,
-  //         admin: ADMIN_PDA,
-  //         adminPaymentAccount: adminMintATokenAccount,
-  //       })
-  //       .preInstructions([
-  //         Token.createAssociatedTokenAccountInstruction(
-  //           ASSOCIATED_TOKEN_PROGRAM_ID,
-  //           TOKEN_PROGRAM_ID,
-  //           mintA.publicKey,
-  //           feeCollectorPaymentAccount,
-  //           FEE_COLLECTOR_KEYPAIR.publicKey,
-  //           provider.wallet.publicKey
-  //         ),
-  //       ])
-  //       .signers([FEE_COLLECTOR_KEYPAIR])
-  //       .rpc();
-
-  //     const feeCollectorPaymentAccountInfo =
-  //       await program.provider.connection.getAccountInfo(
-  //         feeCollectorPaymentAccount
-  //       );
-
-  //     const decodedFeeCollectorTokenAccount = deserializeTokenAccountInfo(
-  //       feeCollectorPaymentAccountInfo?.data
-  //     );
-  //     assert.isTrue(
-  //       decodedFeeCollectorTokenAccount?.amount.eq(availableAdminMintAFees)
-  //     );
-  //   });
-  // });
+  describe("Underwrite Loan - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    let expectedDesiredTerms: LoanTerms;
+    let expectedPawnMint: PublicKey | undefined;
+
+    beforeEach(async () => {
+      let pawnTokenAccount: PublicKey;
+      let pawnTokenAccountInfo: AccountInfo<Buffer> | null;
+
+      ({ pawnLoan: pawnLoanAddress, pawnTokenAccount } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+
+      pawnTokenAccountInfo = await program.provider.connection.getAccountInfo(
+        pawnTokenAccount
+      );
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+      expectedPawnMint = decodedPawnTokenAccountInfo?.mint;
+      expectedDesiredTerms = pawnLoanState.desiredTerms;
+    });
+
+    it("Sets terms for underwritten loan", async () => {
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      const pawnLoanAfter = await program.account.pawnLoan.fetch(
+        pawnLoanAddress
+      );
+      const terms = pawnLoanAfter.terms;
+
+      assert.isTrue(
+        terms?.principalAmount.eq(expectedDesiredTerms.principalAmount)
+      );
+      assert.isTrue(pawnLoanAfter.lender.equals(LENDER_KEYPAIR.publicKey));
+    });
+
+    it("Transfers the loan amount from lender to the borrower -- in SOL", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          pawnLoanState.borrower,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          pawnLoanState.borrower,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      assert.strictEqual(
+        borrowerBalanceBefore + DEFAULT_LOAN_AMOUNT,
+        borrowerBalanceAfter
+      );
+      assert.strictEqual(
+        lenderBalanceBefore,
+        lenderBalanceAfter + DEFAULT_LOAN_AMOUNT
+      );
+    });
+
+    it("Throws error if loan status is not open", async () => {
+      // This will move status from open to active.
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      try {
+        await underwriteLoan(
+          program,
+          pawnLoanAddress,
+          pawnLoanState,
+          LENDER_KEYPAIR,
+          LENDER_KEYPAIR.publicKey,
+          BORROWER_KEYPAIR.publicKey
+        );
+        assert.ok(false);
+      } catch (e) {
+        let err = e as AnchorError;
+        assert.strictEqual(err.error.errorMessage, "InvalidLoanStatus");
+      }
+    });
+
+    it("Throws error if desired loan terms not matched", async () => {
+      let badDesiredTerms = expectedDesiredTerms;
+      badDesiredTerms.principalAmount = new BN(500);
+
+      assert.isNotNull(expectedPawnMint);
+      if (!expectedPawnMint) {
+        return;
+      }
+
+      try {
+        await program.methods
+          .underwriteLoan(expectedDesiredTerms, expectedPawnMint)
+          .accounts({
+            pawnLoan: pawnLoanAddress,
+            lender: LENDER_KEYPAIR.publicKey,
+            lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
+            borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
+          })
+          .signers([LENDER_KEYPAIR])
+          .rpc();
+        assert.ok(false);
+      } catch (e) {
+        const err = e as AnchorError;
+        assert.strictEqual(err.error.errorMessage, "UnexpectedDesiredTerms");
+      }
+    });
+
+    it("Throws error if desired loan mint not matched", async () => {
+      try {
+        await program.methods
+          .underwriteLoan(expectedDesiredTerms, mintA.publicKey)
+          .accounts({
+            pawnLoan: pawnLoanAddress,
+            lender: LENDER_KEYPAIR.publicKey,
+            lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
+            borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
+          })
+          .signers([LENDER_KEYPAIR])
+          .rpc();
+        assert.ok(false);
+      } catch (e) {
+        const err = e as AnchorError;
+        assert.strictEqual(err.error.errorMessage, "UnexpectedPawnMint");
+      }
+    });
+  });
+
+  describe("Underwrite Loan - in SPL Token", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        termsUsdc
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+    });
+
+    it("Transfers the loan amount from lender to the borrower -- in SPL token", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount,
+        borrowerMintATokenAccount
+      );
+
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+
+      // To silence typescript null warning
+      if (borrowerBalanceBefore === null || lenderBalanceAfter == null) {
+        assert.ok(false);
+        return;
+      }
+
+      assert.strictEqual(
+        borrowerBalanceBefore + DEFAULT_LOAN_AMOUNT,
+        borrowerBalanceAfter
+      );
+      assert.strictEqual(
+        lenderBalanceBefore,
+        lenderBalanceAfter + DEFAULT_LOAN_AMOUNT
+      );
+    });
+  });
+
+  describe("Repay Loan - in SOL", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+    });
+
+    it("Repays loan amount from borrower to lender -- in SOL", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          BORROWER_KEYPAIR.publicKey,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      await repayLoanInSol(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        BORROWER_KEYPAIR,
+        ADMIN_PDA
+      );
+
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderSolBalance(
+          program,
+          BORROWER_KEYPAIR.publicKey,
+          LENDER_KEYPAIR.publicKey
+        );
+
+      // To silence typescript null warning
+      if (borrowerBalanceBefore === null || lenderBalanceAfter == null) {
+        assert.ok(false);
+        return;
+      }
+
+      assert.strictEqual(
+        borrowerBalanceBefore - borrowerBalanceAfter,
+        lenderBalanceAfter - lenderBalanceBefore
+      );
+    });
+
+    it("Throws error if non-borrower tries to repay", async () => {
+      try {
+        await repayLoanInSol(
+          program,
+          pawnLoanAddress,
+          pawnLoanState,
+          LENDER_KEYPAIR,
+          ADMIN_PDA
+        );
+        assert.ok(false);
+      } catch (_err) {
+        assert.isTrue(_err instanceof AnchorError);
+        const err = _err as AnchorError;
+        assert.strictEqual(err.error.errorCode.number, 2001);
+        assert.strictEqual(
+          err.error.errorMessage,
+          "A has one constraint was violated"
+        );
+      }
+    });
+
+    it("Throws if repayment happens when loan is not active", async () => {
+      // Status moves from active to repaid
+      await repayLoanInSol(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        BORROWER_KEYPAIR,
+        ADMIN_PDA
+      );
+      try {
+        await repayLoanInSol(
+          program,
+          pawnLoanAddress,
+          pawnLoanState,
+          BORROWER_KEYPAIR,
+          ADMIN_PDA
+        );
+        assert.ok(false);
+      } catch (_err) {
+        assert.isTrue(_err instanceof AnchorError);
+        const err = _err as AnchorError;
+        assert.strictEqual(err.error.errorCode.number, 6003);
+        assert.strictEqual(err.error.errorMessage, "InvalidLoanStatus");
+      }
+    });
+  });
+
+  describe("Repay Loan - in SPL Token", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        termsUsdc
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        lenderMintATokenAccount,
+        borrowerMintATokenAccount
+      );
+    });
+
+    it("Repays loan amount from borrower to lender -- in SPL Token", async () => {
+      const [borrowerBalanceBefore, lenderBalanceBefore] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+
+      await repayLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        BORROWER_KEYPAIR,
+        borrowerMintATokenAccount,
+        lenderMintATokenAccount,
+        ADMIN_PDA,
+        adminMintATokenAccount
+      );
+      const [borrowerBalanceAfter, lenderBalanceAfter] =
+        await getBorrowerAndLenderTokenBalance(
+          program,
+          borrowerMintATokenAccount,
+          lenderMintATokenAccount
+        );
+      // To silence typescript null warning
+      if (
+        borrowerBalanceBefore === null ||
+        borrowerBalanceAfter === null ||
+        lenderBalanceBefore === null ||
+        lenderBalanceAfter === null
+      ) {
+        assert.ok(false);
+        return;
+      }
+      assert.strictEqual(
+        borrowerBalanceBefore - borrowerBalanceAfter,
+        lenderBalanceAfter - lenderBalanceBefore
+      );
+    });
+  });
+
+  describe("Seize Pawn", () => {
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
+
+    beforeEach(async () => {
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_SUPER_SHORT_LOAN
+      ));
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+
+      await underwriteLoan(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        LENDER_KEYPAIR.publicKey,
+        BORROWER_KEYPAIR.publicKey
+      );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+    });
+
+    it("Throws error if attempt to seize before due", async () => {
+      try {
+        await seizePawn(
+          program,
+          pawnLoanAddress,
+          pawnLoanState,
+          LENDER_KEYPAIR,
+          lenderPawnTokenAccount
+        );
+        assert.ok(false);
+      } catch (_err) {
+        assert.isTrue(_err instanceof AnchorError);
+        const err = _err as AnchorError;
+        assert.strictEqual(err.error.errorCode.number, 6008);
+        assert.strictEqual(err.error.errorMessage, "CannotSeizeBeforeExpiry");
+      }
+    });
+
+    it("Seizing should update status and transfer the pawn to the lender", async () => {
+      await delay(2000);
+      await seizePawn(
+        program,
+        pawnLoanAddress,
+        pawnLoanState,
+        LENDER_KEYPAIR,
+        lenderPawnTokenAccount
+      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
+
+      // Unsure why pawnLoan status enum shows up as {defaulted: {}}
+      assert.strictEqual(Object.keys(pawnLoanState.status)[0], "defaulted");
+
+      const lenderPawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          lenderPawnTokenAccount
+        );
+
+      const decodedlenderPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        lenderPawnTokenAccountInfo?.data
+      );
+      if (!pawnLoanState.terms?.mint) {
+        assert.ok(false);
+        return;
+      }
+      // Pawn mint transferred to lender account
+      assert.isTrue(
+        decodedlenderPawnTokenAccountInfo?.mint.equals(pawnMint.publicKey)
+      );
+      assert.strictEqual(
+        decodedlenderPawnTokenAccountInfo?.amount.toNumber(),
+        1
+      );
+    });
+  });
+
+  describe("Cancel Loan", () => {
+    it("Cancel loan", async () => {
+      const { pawnLoan, pawnTokenAccount } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      );
+
+      await program.methods
+        .cancelLoan()
+        .accounts({
+          pawnLoan,
+          borrower: BORROWER_KEYPAIR.publicKey,
+          pawnTokenAccount,
+          pawnMint: pawnMint.publicKey,
+          edition: findMasterEditionPda(pawnMint.publicKey),
+          mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
+        })
+        .signers([BORROWER_KEYPAIR])
+        .rpc();
+
+      // Relevant accounts should be zeroed (back to system program and no lamports) and pawn freed in wallet
+      const pawnLoanAccountInfo =
+        await program.provider.connection.getAccountInfo(pawnLoan);
+      assert.isNull(pawnLoanAccountInfo);
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(pawnTokenAccount);
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+      assert.isTrue(decodedPawnTokenAccountInfo?.amount.eq(new BN(1)));
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
+    });
+  });
+
+  describe("Withdraw admin fees", () => {
+    before(async () => {
+      // Tests above happen sequentially and don't accumulate any admin fee
+      await mintA.mintTo(adminMintATokenAccount, LENDER_KEYPAIR, [], 1_000_000);
+    });
+
+    it("Can withdraw - in SOL", async () => {
+      const beforeAdminAccountInfo =
+        await program.provider.connection.getAccountInfo(ADMIN_PDA);
+      if (!beforeAdminAccountInfo) {
+        assert.isNotNull(beforeAdminAccountInfo);
+        return;
+      }
+
+      await program.methods
+        .withdrawAdminFees()
+        .accounts({
+          feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
+          feeCollectorPaymentAccount: FEE_COLLECTOR_KEYPAIR.publicKey,
+          admin: ADMIN_PDA,
+          adminPaymentAccount: ADMIN_PDA,
+        })
+        .signers([FEE_COLLECTOR_KEYPAIR])
+        .rpc();
+
+      // Admin should be left rent exempt
+      const afterAdminAccountInfo =
+        await program.provider.connection.getAccountInfo(ADMIN_PDA);
+      if (!afterAdminAccountInfo) {
+        assert.isNotNull(afterAdminAccountInfo);
+        return;
+      }
+      const rentExemptThreshold =
+        await provider.connection.getMinimumBalanceForRentExemption(
+          afterAdminAccountInfo.data.length
+        );
+      assert.isTrue(afterAdminAccountInfo.lamports === rentExemptThreshold);
+
+      // fee collector received the SOL
+      const feeCollectorAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          FEE_COLLECTOR_KEYPAIR.publicKey
+        );
+      const expectedLamports =
+        beforeAdminAccountInfo.lamports - afterAdminAccountInfo.lamports;
+      assert.isTrue(feeCollectorAccountInfo?.lamports === expectedLamports);
+    });
+
+    it("Can withdraw - in SPL tokens", async () => {
+      const feeCollectorPaymentAccount = await Token.getAssociatedTokenAddress(
+        ASSOCIATED_TOKEN_PROGRAM_ID,
+        TOKEN_PROGRAM_ID,
+        mintA.publicKey,
+        FEE_COLLECTOR_KEYPAIR.publicKey
+      );
+
+      const adminMintATokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          adminMintATokenAccount
+        );
+
+      const decodedAdminMintATokenAccountInfo = deserializeTokenAccountInfo(
+        adminMintATokenAccountInfo?.data
+      );
+      const availableAdminMintAFees = decodedAdminMintATokenAccountInfo?.amount;
+      if (!availableAdminMintAFees || availableAdminMintAFees.eq(new BN(0))) {
+        assert.ok(
+          false,
+          `availableAdminMintAFees cannot be null or zero but was: ${availableAdminMintAFees}`
+        );
+        return;
+      }
+
+      await program.methods
+        .withdrawAdminFees()
+        .accounts({
+          feeCollector: FEE_COLLECTOR_KEYPAIR.publicKey,
+          feeCollectorPaymentAccount,
+          admin: ADMIN_PDA,
+          adminPaymentAccount: adminMintATokenAccount,
+        })
+        .preInstructions([
+          Token.createAssociatedTokenAccountInstruction(
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+            TOKEN_PROGRAM_ID,
+            mintA.publicKey,
+            feeCollectorPaymentAccount,
+            FEE_COLLECTOR_KEYPAIR.publicKey,
+            provider.wallet.publicKey
+          ),
+        ])
+        .signers([FEE_COLLECTOR_KEYPAIR])
+        .rpc();
+
+      const feeCollectorPaymentAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          feeCollectorPaymentAccount
+        );
+
+      const decodedFeeCollectorTokenAccount = deserializeTokenAccountInfo(
+        feeCollectorPaymentAccountInfo?.data
+      );
+      assert.isTrue(
+        decodedFeeCollectorTokenAccount?.amount.eq(availableAdminMintAFees)
+      );
+    });
+  });
 });
 
 async function testInvalidTerms(

@@ -45,9 +45,12 @@ pub mod pawn_shop {
             let unix_timestamp = Clock::get()?.unix_timestamp;
             let pawn_loan = &mut ctx.accounts.pawn_loan;
 
+            pawn_loan.base = ctx.accounts.base.key();
             pawn_loan.bump = unwrap_bump!(ctx, "pawn_loan");
             pawn_loan.status = LoanStatus::Open;
             pawn_loan.borrower = ctx.accounts.borrower.key();
+            pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
+            pawn_loan.pawn_mint = ctx.accounts.pawn_mint.key();
             match &desired_terms {
                 Some(terms) => {
                     invariant!(terms.principal_amount != 0, InvalidLoanTerms);
@@ -78,7 +81,6 @@ pub mod pawn_shop {
         emit!(LoanRequested {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.key(),
         });
 
         Ok(())
@@ -103,10 +105,9 @@ pub mod pawn_shop {
 
             // Verify loan matches lender expectation
             invariant!(expected_terms == terms, UnexpectedDesiredTerms);
-            let pawn_token_account = &ctx.accounts.pawn_token_account;
             assert_keys_eq!(
                 expected_pawn_mint,
-                pawn_token_account.mint,
+                pawn_loan.pawn_mint,
                 UnexpectedPawnMint
             );
 
@@ -150,7 +151,6 @@ pub mod pawn_shop {
         emit!(LoanUnderwritten {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
         });
 
         Ok(())
@@ -252,7 +252,6 @@ pub mod pawn_shop {
         emit!(LoanRepaid {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
         });
 
         Ok(())
@@ -302,7 +301,7 @@ pub mod pawn_shop {
                     },
                     &[&[
                         ctx.accounts.pawn_loan.base.as_ref(),
-                        b"pawn-loan".as_ref(),
+                        b"pawn_loan".as_ref(),
                         &[ctx.accounts.pawn_loan.bump],
                     ]],
                 ),
@@ -313,7 +312,6 @@ pub mod pawn_shop {
         emit!(PawnSeized {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
         });
 
         Ok(())
@@ -370,11 +368,11 @@ pub mod pawn_shop {
 pub struct RequestLoan<'info> {
     #[account(mut)]
     pub base: Signer<'info>,
-    #[account(init, seeds = [base.key.as_ref(), b"pawn-loan".as_ref()], bump, payer = borrower, space = PawnLoan::space())]
+    #[account(init, seeds = [base.key.as_ref(), b"pawn_loan".as_ref()], bump, payer = borrower, space = PawnLoan::space())]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub borrower: Signer<'info>,
-    #[account(mut)]
+    #[account(mut, token::mint = pawn_mint)]
     pub pawn_token_account: Account<'info, TokenAccount>,
     pub pawn_mint: Account<'info, Mint>,
     /// CHECK: Validated by the cpi to mpl token metadata
@@ -386,9 +384,8 @@ pub struct RequestLoan<'info> {
 
 #[derive(Accounts)]
 pub struct UnderwriteLoan<'info> {
-    #[account(mut, has_one = pawn_token_account)]
+    #[account(mut)]
     pub pawn_loan: Account<'info, PawnLoan>,
-    pub pawn_token_account: Account<'info, TokenAccount>,
     pub lender: Signer<'info>,
     /// CHECK: Sends the principal, can be the lender wallet or his spl token account
     #[account(mut)]
@@ -402,11 +399,10 @@ pub struct UnderwriteLoan<'info> {
 
 #[derive(Accounts)]
 pub struct RepayLoan<'info> {
-    #[account(mut, has_one = pawn_token_account, has_one = borrower)]
+    #[account(mut, has_one = pawn_token_account, has_one = pawn_mint, has_one = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
-    #[account(mut)]
     pub pawn_mint: Account<'info, Mint>,
     /// CHECK: Validated by the cpi to mpl token metadata
     pub edition: UncheckedAccount<'info>,
@@ -429,13 +425,12 @@ pub struct RepayLoan<'info> {
 
 #[derive(Accounts)]
 pub struct CancelLoan<'info> {
-    #[account(mut, has_one = borrower, has_one = pawn_token_account, close = borrower)]
+    #[account(mut, has_one = borrower, has_one = pawn_token_account, has_one = pawn_mint, close = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub borrower: Signer<'info>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
-    #[account(mut)]
     pub pawn_mint: Account<'info, Mint>,
     /// CHECK: Validated by the cpi to mpl token metadata
     pub edition: UncheckedAccount<'info>,
@@ -445,7 +440,7 @@ pub struct CancelLoan<'info> {
 
 #[derive(Accounts)]
 pub struct SeizePawn<'info> {
-    #[account(mut, has_one = lender, has_one = pawn_token_account)]
+    #[account(mut, has_one = lender, has_one = pawn_token_account, has_one = pawn_mint)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
@@ -502,10 +497,11 @@ impl LoanTerms {
 #[account]
 #[derive(Copy)]
 pub struct PawnLoan {
-    pub bump: u8,
     pub base: Pubkey,
+    pub bump: u8,
     pub borrower: Pubkey,
     pub pawn_token_account: Pubkey,
+    pub pawn_mint: Pubkey,
     pub status: LoanStatus,
     pub lender: Pubkey,
     pub desired_terms: Option<LoanTerms>,
@@ -517,7 +513,7 @@ pub struct PawnLoan {
 
 impl PawnLoan {
     fn space() -> usize {
-        8 + 1 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
+        8 + 32 + 1 + 32 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
     }
 }
 
@@ -585,28 +581,24 @@ pub enum ErrorCode {
 pub struct LoanRequested {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
 }
 
 #[event]
 pub struct LoanUnderwritten {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
 }
 
 #[event]
 pub struct LoanRepaid {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
 }
 
 #[event]
 pub struct PawnSeized {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
 }
 
 #[derive(Debug, Clone)]

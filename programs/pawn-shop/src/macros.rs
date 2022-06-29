@@ -17,7 +17,7 @@ macro_rules! freeze_pawn_token_account {
             ],
             &[&[
                 $ctx.accounts.base.key.as_ref(),
-                b"pawn-loan".as_ref(),
+                b"pawn_loan".as_ref(),
                 &[unwrap_bump!($ctx, "pawn_loan")],
             ]],
         )?;
@@ -42,7 +42,7 @@ macro_rules! thaw_pawn_token_account {
             ],
             &[&[
                 $ctx.accounts.pawn_loan.base.as_ref(),
-                b"pawn-loan".as_ref(),
+                b"pawn_loan".as_ref(),
                 &[$ctx.accounts.pawn_loan.bump],
             ]],
         )?;
