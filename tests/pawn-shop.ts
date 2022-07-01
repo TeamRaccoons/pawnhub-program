@@ -603,6 +603,19 @@ describe("PawnHub", () => {
         borrowerBalanceBefore - borrowerBalanceAfter,
         lenderBalanceAfter - lenderBalanceBefore
       );
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          pawnLoanState.pawnTokenAccount
+        );
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+
+      // Pawn token account no longer frozen and delegate is revoked
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
     });
 
     it("Throws error if non-borrower tries to repay", async () => {
@@ -788,10 +801,12 @@ describe("PawnHub", () => {
       const decodedlenderPawnTokenAccountInfo = deserializeTokenAccountInfo(
         lenderPawnTokenAccountInfo?.data
       );
+
       if (!pawnLoanState.terms?.mint) {
         assert.ok(false);
         return;
       }
+
       // Pawn mint transferred to lender account
       assert.isTrue(
         decodedlenderPawnTokenAccountInfo?.mint.equals(pawnMint.publicKey)
@@ -800,6 +815,19 @@ describe("PawnHub", () => {
         decodedlenderPawnTokenAccountInfo?.amount.toNumber(),
         1
       );
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          pawnLoanState.pawnTokenAccount
+        );
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+
+      // Pawn token account no longer frozen and delegate is revoked
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
     });
   });
 
