@@ -30,7 +30,7 @@ mod fee_collector {
 declare_id!("PawnShop11111111111111111111111111111111112");
 
 #[cfg(feature = "devnet")]
-declare_id!("6LPeFKNuZ39CRgHkoWsRZB8QWrvb8kPLs289G7bF6QgZ");
+declare_id!("GLcEe1BaCDWcis4sWhCVB95ti7GjR9tHD2M9Y2Q5gV9H");
 
 #[cfg(feature = "mainnet")]
 declare_id!("PawnLnfQT8tszFmSqdJHb2377ou74z3p6R4Eu1FCeyL");
