@@ -105,11 +105,7 @@ pub mod pawn_shop {
 
             // Verify loan matches lender expectation
             invariant!(expected_terms == terms, UnexpectedDesiredTerms);
-            assert_keys_eq!(
-                expected_pawn_mint,
-                pawn_loan.pawn_mint,
-                UnexpectedPawnMint
-            );
+            assert_keys_eq!(expected_pawn_mint, pawn_loan.pawn_mint, UnexpectedPawnMint);
 
             let principal_amount = terms.principal_amount;
             let loan_mint = terms.mint;
