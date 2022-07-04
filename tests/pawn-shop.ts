@@ -21,15 +21,18 @@ import {
   requestLoan,
   seizePawn,
   underwriteLoan,
+  findMasterEditionPda,
 } from "./pawn-shop-sdk";
 import { PawnShop } from "../target/types/pawn_shop";
+import { PublicKey, Keypair, AccountInfo, Transaction } from "@solana/web3.js";
 import {
-  PublicKey,
-  Keypair,
-  AccountInfo,
-  Transaction,
-  SystemProgram,
-} from "@solana/web3.js";
+  PROGRAM_ID as METAPLEX_PROGRAM_ID,
+  createCreateMasterEditionV3Instruction,
+  createCreateMetadataAccountV2Instruction,
+} from "@metaplex-foundation/mpl-token-metadata";
+
+// import { set } from "@project-serum/anchor/dist/cjs/utils/features";
+// set("debug-logs");
 
 const BORROWER_KEYPAIR = new Keypair();
 const LENDER_KEYPAIR = new Keypair();
@@ -73,7 +76,7 @@ describe("PawnHub", () => {
   )[0];
 
   // New ones are assigned before each test with "beforeEach" hook.
-  let pawnLoanKeypair: Keypair;
+  let baseKeypair: Keypair;
   let pawnMint: Token;
   let borrowerPawnTokenAccount: PublicKey;
   let lenderPawnTokenAccount: PublicKey;
@@ -140,14 +143,14 @@ describe("PawnHub", () => {
   });
 
   beforeEach(async () => {
-    pawnLoanKeypair = new Keypair();
+    baseKeypair = new Keypair();
 
-    // Create mint and mint token
+    // Create mint, metadata accounts and master edition and mint token
     pawnMint = await Token.createMint(
       provider.connection,
       BORROWER_KEYPAIR,
       BORROWER_KEYPAIR.publicKey,
-      null /** freeze authority */,
+      BORROWER_KEYPAIR.publicKey /** freeze authority */,
       0 /** decimals */,
       TOKEN_PROGRAM_ID
     );
@@ -159,25 +162,86 @@ describe("PawnHub", () => {
       LENDER_KEYPAIR.publicKey
     );
     await pawnMint.mintTo(borrowerPawnTokenAccount, BORROWER_KEYPAIR, [], 1);
+
+    const tx = new Transaction();
+    // those address derivation are no longer in the package, why?
+    const [metadata] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from("metadata"),
+        METAPLEX_PROGRAM_ID.toBuffer(),
+        pawnMint.publicKey.toBuffer(),
+      ],
+      METAPLEX_PROGRAM_ID
+    );
+    tx.instructions.push(
+      createCreateMetadataAccountV2Instruction(
+        {
+          metadata,
+          mint: pawnMint.publicKey,
+          mintAuthority: BORROWER_KEYPAIR.publicKey,
+          payer: BORROWER_KEYPAIR.publicKey,
+          updateAuthority: BORROWER_KEYPAIR.publicKey,
+        },
+        {
+          createMetadataAccountArgsV2: {
+            data: {
+              name: "Test",
+              symbol: "TST",
+              uri: "https://google.com",
+              sellerFeeBasisPoints: 0,
+              creators: null,
+              collection: null,
+              uses: null,
+            },
+            isMutable: true,
+            //collectionDetails: null,
+          },
+        }
+      )
+    );
+    const [edition] = await PublicKey.findProgramAddress(
+      [
+        Buffer.from("metadata"),
+        METAPLEX_PROGRAM_ID.toBuffer(),
+        pawnMint.publicKey.toBuffer(),
+        Buffer.from("edition"),
+      ],
+      METAPLEX_PROGRAM_ID
+    );
+    tx.instructions.push(
+      createCreateMasterEditionV3Instruction(
+        {
+          edition,
+          mint: pawnMint.publicKey,
+          updateAuthority: BORROWER_KEYPAIR.publicKey,
+          mintAuthority: BORROWER_KEYPAIR.publicKey,
+          payer: BORROWER_KEYPAIR.publicKey,
+          metadata,
+        },
+        { createMasterEditionArgs: { maxSupply: 1 } }
+      )
+    );
+
+    await provider.send(tx, [BORROWER_KEYPAIR]);
   });
 
   describe("Request Loan", () => {
     it("Saves terms in pawn loan account ", async () => {
-      await requestLoan(
+      const { pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         TERMS_VALID
       );
 
-      const pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
+      const pawnLoanState = await program.account.pawnLoan.fetch(
+        pawnLoanAddress
       );
-      const desiredTerms = pawnLoan.desiredTerms;
+      const desiredTerms = pawnLoanState.desiredTerms;
 
-      assert.isTrue(pawnLoan.borrower.equals(BORROWER_KEYPAIR.publicKey));
+      assert.isTrue(pawnLoanState.borrower.equals(BORROWER_KEYPAIR.publicKey));
       assert.isTrue(
         desiredTerms?.principalAmount.eq(TERMS_VALID.principalAmount)
       );
@@ -189,45 +253,28 @@ describe("PawnHub", () => {
       );
       assert.isTrue(desiredTerms?.duration.eq(TERMS_VALID.duration));
       // These terms are only set when the loan is underwritten.
-      assert.isNull(pawnLoan.terms);
+      assert.isNull(pawnLoanState.terms);
     });
 
-    it("Moves NFT to program escrow", async () => {
-      const pawnTokenAccount = findProgramAddressSync(
-        [
-          Buffer.from("pawn-token-account"),
-          pawnLoanKeypair.publicKey.toBuffer(),
-        ],
-        program.programId
-      )[0];
+    it("Freezes NFT into its original account under the pawn loan's control", async () => {
+      const { pawnTokenAccount, pawnLoan } = await requestLoan(
+        program,
+        baseKeypair,
+        BORROWER_KEYPAIR,
+        borrowerPawnTokenAccount,
+        pawnMint.publicKey,
+        TERMS_VALID
+      );
 
       const pawnTokenAccountInfo =
         await program.provider.connection.getAccountInfo(pawnTokenAccount);
 
-      // Before: Mint is in borrower pawn token account.
-      assert.strictEqual(
-        (
-          await pawnMint.getAccountInfo(borrowerPawnTokenAccount)
-        ).amount.toNumber(),
-        1
-      );
-      // Before: Pawn token account not created yet.
-      assert.isNull(pawnTokenAccountInfo);
-
-      await requestLoan(
-        program,
-        pawnLoanKeypair,
-        BORROWER_KEYPAIR,
-        pawnMint.publicKey,
-        borrowerPawnTokenAccount,
-        TERMS_VALID
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
       );
 
-      // After: Mint moved to program escrow.
-      assert.strictEqual(
-        (await pawnMint.getAccountInfo(pawnTokenAccount)).amount.toNumber(),
-        1
-      );
+      assert.isTrue(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isTrue(decodedPawnTokenAccountInfo?.delegate?.equals(pawnLoan));
     });
 
     it("Should throw if invalid principal requested", async () => {
@@ -237,9 +284,10 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
@@ -251,9 +299,10 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
@@ -265,35 +314,36 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        pawnLoanKeypair,
-        pawnMint,
+        baseKeypair,
+        BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsInvalid
       );
     });
   });
 
   describe("Underwrite Loan - in SOL", () => {
-    let pawnLoan: any;
-    let pawnTokenAccount: PublicKey;
-    let pawnTokenAccountInfo: AccountInfo<Buffer> | null;
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
 
     let expectedDesiredTerms: LoanTerms;
     let expectedPawnMint: PublicKey | undefined;
 
     beforeEach(async () => {
-      ({ pawnTokenAccount } = await requestLoan(
+      let pawnTokenAccount: PublicKey;
+      let pawnTokenAccountInfo: AccountInfo<Buffer> | null;
+
+      ({ pawnLoan: pawnLoanAddress, pawnTokenAccount } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         TERMS_VALID
       ));
 
-      pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
 
       pawnTokenAccountInfo = await program.provider.connection.getAccountInfo(
         pawnTokenAccount
@@ -302,22 +352,21 @@ describe("PawnHub", () => {
         pawnTokenAccountInfo?.data
       );
       expectedPawnMint = decodedPawnTokenAccountInfo?.mint;
-      expectedDesiredTerms = pawnLoan.desiredTerms;
+      expectedDesiredTerms = pawnLoanState.desiredTerms;
     });
 
     it("Sets terms for underwritten loan", async () => {
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         LENDER_KEYPAIR.publicKey,
         BORROWER_KEYPAIR.publicKey
       );
 
       const pawnLoanAfter = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
+        pawnLoanAddress
       );
       const terms = pawnLoanAfter.terms;
 
@@ -331,15 +380,14 @@ describe("PawnHub", () => {
       const [borrowerBalanceBefore, lenderBalanceBefore] =
         await getBorrowerAndLenderSolBalance(
           program,
-          pawnLoan.borrower,
+          pawnLoanState.borrower,
           LENDER_KEYPAIR.publicKey
         );
 
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         LENDER_KEYPAIR.publicKey,
         BORROWER_KEYPAIR.publicKey
@@ -348,7 +396,7 @@ describe("PawnHub", () => {
       const [borrowerBalanceAfter, lenderBalanceAfter] =
         await getBorrowerAndLenderSolBalance(
           program,
-          pawnLoan.borrower,
+          pawnLoanState.borrower,
           LENDER_KEYPAIR.publicKey
         );
 
@@ -366,9 +414,8 @@ describe("PawnHub", () => {
       // This will move status from open to active.
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         LENDER_KEYPAIR.publicKey,
         BORROWER_KEYPAIR.publicKey
@@ -377,9 +424,8 @@ describe("PawnHub", () => {
       try {
         await underwriteLoan(
           program,
-          pawnLoan,
-          pawnLoanKeypair,
-          pawnTokenAccount,
+          pawnLoanAddress,
+          pawnLoanState,
           LENDER_KEYPAIR,
           LENDER_KEYPAIR.publicKey,
           BORROWER_KEYPAIR.publicKey
@@ -402,10 +448,9 @@ describe("PawnHub", () => {
 
       try {
         await program.methods
-          .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(1))
+          .underwriteLoan(expectedDesiredTerms, expectedPawnMint)
           .accounts({
-            pawnLoan: pawnLoanKeypair.publicKey,
-            pawnTokenAccount,
+            pawnLoan: pawnLoanAddress,
             lender: LENDER_KEYPAIR.publicKey,
             lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
             borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
@@ -422,10 +467,9 @@ describe("PawnHub", () => {
     it("Throws error if desired loan mint not matched", async () => {
       try {
         await program.methods
-          .underwriteLoan(expectedDesiredTerms, mintA.publicKey, new BN(1))
+          .underwriteLoan(expectedDesiredTerms, mintA.publicKey)
           .accounts({
-            pawnLoan: pawnLoanKeypair.publicKey,
-            pawnTokenAccount,
+            pawnLoan: pawnLoanAddress,
             lender: LENDER_KEYPAIR.publicKey,
             lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
             borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
@@ -438,50 +482,23 @@ describe("PawnHub", () => {
         assert.strictEqual(err.error.errorMessage, "UnexpectedPawnMint");
       }
     });
-
-    it("Throws error if desired loan amount not matched", async () => {
-      assert.isNotNull(expectedPawnMint);
-      if (!expectedPawnMint) {
-        return;
-      }
-
-      try {
-        await program.methods
-          .underwriteLoan(expectedDesiredTerms, expectedPawnMint, new BN(100))
-          .accounts({
-            pawnLoan: pawnLoanKeypair.publicKey,
-            pawnTokenAccount,
-            lender: LENDER_KEYPAIR.publicKey,
-            lenderPaymentAccount: LENDER_KEYPAIR.publicKey,
-            borrowerPaymentAccount: BORROWER_KEYPAIR.publicKey,
-          })
-          .signers([LENDER_KEYPAIR])
-          .rpc();
-        assert.ok(false);
-      } catch (e) {
-        const err = e as AnchorError;
-        assert.strictEqual(err.error.errorMessage, "UnexpectedPawnAmount");
-      }
-    });
   });
 
   describe("Underwrite Loan - in SPL Token", () => {
-    let pawnLoan: any;
-    let pawnTokenAccount: PublicKey;
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
 
     beforeEach(async () => {
-      ({ pawnTokenAccount } = await requestLoan(
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsUsdc
       ));
 
-      pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
     });
 
     it("Transfers the loan amount from lender to the borrower -- in SPL token", async () => {
@@ -494,9 +511,8 @@ describe("PawnHub", () => {
 
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         lenderMintATokenAccount,
         borrowerMintATokenAccount
@@ -527,32 +543,31 @@ describe("PawnHub", () => {
   });
 
   describe("Repay Loan - in SOL", () => {
-    let pawnLoan: any;
-    let pawnTokenAccount: PublicKey;
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
 
     beforeEach(async () => {
-      ({ pawnTokenAccount } = await requestLoan(
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         TERMS_VALID
       ));
 
-      pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
 
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         LENDER_KEYPAIR.publicKey,
         BORROWER_KEYPAIR.publicKey
       );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
     });
 
     it("Repays loan amount from borrower to lender -- in SOL", async () => {
@@ -565,11 +580,9 @@ describe("PawnHub", () => {
 
       await repayLoanInSol(
         program,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         BORROWER_KEYPAIR,
-        borrowerPawnTokenAccount,
-        LENDER_KEYPAIR.publicKey,
         ADMIN_PDA
       );
 
@@ -590,17 +603,28 @@ describe("PawnHub", () => {
         borrowerBalanceBefore - borrowerBalanceAfter,
         lenderBalanceAfter - lenderBalanceBefore
       );
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          pawnLoanState.pawnTokenAccount
+        );
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+
+      // Pawn token account no longer frozen and delegate is revoked
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
     });
 
     it("Throws error if non-borrower tries to repay", async () => {
       try {
         await repayLoanInSol(
           program,
-          pawnLoanKeypair,
-          pawnTokenAccount,
+          pawnLoanAddress,
+          pawnLoanState,
           LENDER_KEYPAIR,
-          borrowerPawnTokenAccount,
-          LENDER_KEYPAIR.publicKey,
           ADMIN_PDA
         );
         assert.ok(false);
@@ -619,21 +643,17 @@ describe("PawnHub", () => {
       // Status moves from active to repaid
       await repayLoanInSol(
         program,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         BORROWER_KEYPAIR,
-        borrowerPawnTokenAccount,
-        LENDER_KEYPAIR.publicKey,
         ADMIN_PDA
       );
       try {
         await repayLoanInSol(
           program,
-          pawnLoanKeypair,
-          pawnTokenAccount,
+          pawnLoanAddress,
+          pawnLoanState,
           BORROWER_KEYPAIR,
-          borrowerPawnTokenAccount,
-          LENDER_KEYPAIR.publicKey,
           ADMIN_PDA
         );
         assert.ok(false);
@@ -647,28 +667,25 @@ describe("PawnHub", () => {
   });
 
   describe("Repay Loan - in SPL Token", () => {
-    let pawnLoan: any;
-    let pawnTokenAccount: PublicKey;
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
 
     beforeEach(async () => {
-      ({ pawnTokenAccount } = await requestLoan(
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         termsUsdc
       ));
 
-      pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
 
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         lenderMintATokenAccount,
         borrowerMintATokenAccount
@@ -685,11 +702,10 @@ describe("PawnHub", () => {
 
       await repayLoan(
         program,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         BORROWER_KEYPAIR,
         borrowerMintATokenAccount,
-        borrowerPawnTokenAccount,
         lenderMintATokenAccount,
         ADMIN_PDA,
         adminMintATokenAccount
@@ -718,40 +734,39 @@ describe("PawnHub", () => {
   });
 
   describe("Seize Pawn", () => {
-    let pawnLoan: any;
-    let pawnTokenAccount: PublicKey;
+    let pawnLoanAddress: PublicKey;
+    let pawnLoanState: any;
 
     beforeEach(async () => {
-      ({ pawnTokenAccount } = await requestLoan(
+      ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         TERMS_SUPER_SHORT_LOAN
       ));
 
-      pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
 
       await underwriteLoan(
         program,
-        pawnLoan,
-        pawnLoanKeypair,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         LENDER_KEYPAIR.publicKey,
         BORROWER_KEYPAIR.publicKey
       );
+
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
     });
 
     it("Throws error if attempt to seize before due", async () => {
       try {
         await seizePawn(
           program,
-          pawnLoanKeypair.publicKey,
-          pawnTokenAccount,
+          pawnLoanAddress,
+          pawnLoanState,
           LENDER_KEYPAIR,
           lenderPawnTokenAccount
         );
@@ -764,21 +779,19 @@ describe("PawnHub", () => {
       }
     });
 
-    it("Seizing should update status and transfer mint to lender", async () => {
+    it("Seizing should update status and transfer the pawn to the lender", async () => {
       await delay(2000);
       await seizePawn(
         program,
-        pawnLoanKeypair.publicKey,
-        pawnTokenAccount,
+        pawnLoanAddress,
+        pawnLoanState,
         LENDER_KEYPAIR,
         lenderPawnTokenAccount
       );
-      const pawnLoan = await program.account.pawnLoan.fetch(
-        pawnLoanKeypair.publicKey
-      );
+      pawnLoanState = await program.account.pawnLoan.fetch(pawnLoanAddress);
 
       // Unsure why pawnLoan status enum shows up as {defaulted: {}}
-      assert.strictEqual(Object.keys(pawnLoan.status)[0], "defaulted");
+      assert.strictEqual(Object.keys(pawnLoanState.status)[0], "defaulted");
 
       const lenderPawnTokenAccountInfo =
         await program.provider.connection.getAccountInfo(
@@ -788,10 +801,12 @@ describe("PawnHub", () => {
       const decodedlenderPawnTokenAccountInfo = deserializeTokenAccountInfo(
         lenderPawnTokenAccountInfo?.data
       );
-      if (!pawnLoan.terms?.mint) {
+
+      if (!pawnLoanState.terms?.mint) {
         assert.ok(false);
         return;
       }
+
       // Pawn mint transferred to lender account
       assert.isTrue(
         decodedlenderPawnTokenAccountInfo?.mint.equals(pawnMint.publicKey)
@@ -800,51 +815,60 @@ describe("PawnHub", () => {
         decodedlenderPawnTokenAccountInfo?.amount.toNumber(),
         1
       );
+
+      const pawnTokenAccountInfo =
+        await program.provider.connection.getAccountInfo(
+          pawnLoanState.pawnTokenAccount
+        );
+
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
+      );
+
+      // Pawn token account no longer frozen and delegate is revoked
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
     });
   });
 
   describe("Cancel Loan", () => {
     it("Cancel loan", async () => {
-      const { pawnTokenAccount } = await requestLoan(
+      const { pawnLoan, pawnTokenAccount } = await requestLoan(
         program,
-        pawnLoanKeypair,
+        baseKeypair,
         BORROWER_KEYPAIR,
-        pawnMint.publicKey,
         borrowerPawnTokenAccount,
+        pawnMint.publicKey,
         TERMS_VALID
       );
 
       await program.methods
         .cancelLoan()
         .accounts({
-          pawnLoan: pawnLoanKeypair.publicKey,
-          pawnTokenAccount,
+          pawnLoan,
           borrower: BORROWER_KEYPAIR.publicKey,
-          borrowerPawnTokenAccount,
+          pawnTokenAccount,
+          pawnMint: pawnMint.publicKey,
+          edition: findMasterEditionPda(pawnMint.publicKey),
+          mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
         })
         .signers([BORROWER_KEYPAIR])
         .rpc();
 
-      // Relevant accounts should be zeroed (back to system program and no lamports) and pawn back in wallet
+      // Relevant accounts should be zeroed (back to system program and no lamports) and pawn freed in wallet
       const pawnLoanAccountInfo =
-        await program.provider.connection.getAccountInfo(
-          pawnLoanKeypair.publicKey
-        );
+        await program.provider.connection.getAccountInfo(pawnLoan);
       assert.isNull(pawnLoanAccountInfo);
 
       const pawnTokenAccountInfo =
         await program.provider.connection.getAccountInfo(pawnTokenAccount);
-      assert.isNull(pawnTokenAccountInfo);
 
-      const borrowerPawnTokenAccountInfo =
-        await program.provider.connection.getAccountInfo(
-          borrowerPawnTokenAccount
-        );
-
-      const decodedBorrowerPawnTokenAccountInfo = deserializeTokenAccountInfo(
-        borrowerPawnTokenAccountInfo?.data
+      const decodedPawnTokenAccountInfo = deserializeTokenAccountInfo(
+        pawnTokenAccountInfo?.data
       );
-      assert.isTrue(decodedBorrowerPawnTokenAccountInfo?.amount.eq(new BN(1)));
+      assert.isTrue(decodedPawnTokenAccountInfo?.amount.eq(new BN(1)));
+      assert.isFalse(decodedPawnTokenAccountInfo?.isFrozen);
+      assert.isNull(decodedPawnTokenAccountInfo?.delegate);
     });
   });
 
@@ -959,18 +983,19 @@ describe("PawnHub", () => {
 
 async function testInvalidTerms(
   program: Program<PawnShop>,
-  pawnLoanKeypair: Keypair,
-  pawnMint: Token,
+  baseKeypair: Keypair,
+  borrowerKeypair: Keypair,
   borrowerPawnTokenAccount: PublicKey,
+  pawnMint: PublicKey,
   termsInvalid: LoanTerms
 ) {
   try {
     await requestLoan(
       program,
-      pawnLoanKeypair,
-      BORROWER_KEYPAIR,
-      pawnMint.publicKey,
+      baseKeypair,
+      borrowerKeypair,
       borrowerPawnTokenAccount,
+      pawnMint,
       termsInvalid
     );
     assert.ok(false);

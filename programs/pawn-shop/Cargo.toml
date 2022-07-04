@@ -18,6 +18,7 @@ mainnet = []
 default = []
 
 [dependencies]
-anchor-lang = "0.23.0"
-anchor-spl = "0.23.0"
+anchor-lang = "0.24.2"
+anchor-spl = "0.24.2"
 vipers = "2.0.2"
+mpl-token-metadata = { version = "1.2.3", features = ["no-entrypoint"] }
