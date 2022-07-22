@@ -45,7 +45,6 @@ pub mod pawn_shop {
             let unix_timestamp = Clock::get()?.unix_timestamp;
             let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-            pawn_loan.base = ctx.accounts.base.key();
             pawn_loan.bump = unwrap_bump!(ctx, "pawn_loan");
             pawn_loan.status = LoanStatus::Open;
             pawn_loan.borrower = ctx.accounts.borrower.key();
@@ -296,8 +295,8 @@ pub mod pawn_shop {
                         authority: ctx.accounts.pawn_loan.to_account_info(),
                     },
                     &[&[
-                        ctx.accounts.pawn_loan.base.as_ref(),
-                        b"pawn_loan".as_ref(),
+                        b"pawn_loan",
+                        ctx.accounts.pawn_loan.pawn_token_account.as_ref(),
                         &[ctx.accounts.pawn_loan.bump],
                     ]],
                 ),
@@ -362,9 +361,13 @@ pub mod pawn_shop {
 
 #[derive(Accounts)]
 pub struct RequestLoan<'info> {
-    #[account(mut)]
-    pub base: Signer<'info>,
-    #[account(init, seeds = [base.key.as_ref(), b"pawn_loan".as_ref()], bump, payer = borrower, space = PawnLoan::space())]
+    #[account(
+        init,
+        seeds = [b"pawn_loan", pawn_token_account.key().as_ref()],
+        bump,
+        payer = borrower,
+        space = PawnLoan::space(),
+    )]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub borrower: Signer<'info>,
@@ -493,7 +496,6 @@ impl LoanTerms {
 #[account]
 #[derive(Copy)]
 pub struct PawnLoan {
-    pub base: Pubkey,
     pub bump: u8,
     pub borrower: Pubkey,
     pub pawn_token_account: Pubkey,
@@ -509,7 +511,7 @@ pub struct PawnLoan {
 
 impl PawnLoan {
     fn space() -> usize {
-        8 + 32 + 1 + 32 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
+        8 + 1 + 32 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
     }
 }
 
