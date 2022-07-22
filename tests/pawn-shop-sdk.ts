@@ -25,21 +25,19 @@ export type LoanTerms = IdlTypes<PawnShop>["LoanTerms"];
 
 export async function requestLoan(
   program: Program<PawnShop>,
-  baseKeypair: Keypair,
   borrowerKeypair: Keypair,
   borrowerPawnTokenAccount: PublicKey,
   pawnMint: PublicKey,
   desiredTerms: LoanTerms
 ) {
   const pawnLoan = findProgramAddressSync(
-    [baseKeypair.publicKey.toBuffer(), Buffer.from("pawn_loan")],
+    [Buffer.from("pawn_loan"), borrowerPawnTokenAccount.toBuffer()],
     program.programId
   )[0];
 
   const signature = await program.methods
     .requestLoan(desiredTerms)
     .accounts({
-      base: baseKeypair.publicKey,
       pawnLoan,
       borrower: borrowerKeypair.publicKey,
       pawnTokenAccount: borrowerPawnTokenAccount,
@@ -47,7 +45,7 @@ export async function requestLoan(
       edition: findMasterEditionPda(pawnMint),
       mplTokenMetadataProgram: METAPLEX_PROGRAM_ID,
     })
-    .signers([baseKeypair, borrowerKeypair])
+    .signers([borrowerKeypair])
     .rpc();
 
   return {

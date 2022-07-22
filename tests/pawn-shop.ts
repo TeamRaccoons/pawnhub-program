@@ -76,7 +76,6 @@ describe("PawnHub", () => {
   )[0];
 
   // New ones are assigned before each test with "beforeEach" hook.
-  let baseKeypair: Keypair;
   let pawnMint: Token;
   let borrowerPawnTokenAccount: PublicKey;
   let lenderPawnTokenAccount: PublicKey;
@@ -143,8 +142,6 @@ describe("PawnHub", () => {
   });
 
   beforeEach(async () => {
-    baseKeypair = new Keypair();
-
     // Create mint, metadata accounts and master edition and mint token
     pawnMint = await Token.createMint(
       provider.connection,
@@ -229,7 +226,6 @@ describe("PawnHub", () => {
     it("Saves terms in pawn loan account ", async () => {
       const { pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -259,7 +255,6 @@ describe("PawnHub", () => {
     it("Freezes NFT into its original account under the pawn loan's control", async () => {
       const { pawnTokenAccount, pawnLoan } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -284,7 +279,6 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -299,7 +293,6 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -314,7 +307,6 @@ describe("PawnHub", () => {
 
       await testInvalidTerms(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -336,7 +328,6 @@ describe("PawnHub", () => {
 
       ({ pawnLoan: pawnLoanAddress, pawnTokenAccount } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -491,7 +482,6 @@ describe("PawnHub", () => {
     beforeEach(async () => {
       ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -549,7 +539,6 @@ describe("PawnHub", () => {
     beforeEach(async () => {
       ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -673,7 +662,6 @@ describe("PawnHub", () => {
     beforeEach(async () => {
       ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -740,7 +728,6 @@ describe("PawnHub", () => {
     beforeEach(async () => {
       ({ pawnLoan: pawnLoanAddress } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -835,7 +822,6 @@ describe("PawnHub", () => {
     it("Cancel loan", async () => {
       const { pawnLoan, pawnTokenAccount } = await requestLoan(
         program,
-        baseKeypair,
         BORROWER_KEYPAIR,
         borrowerPawnTokenAccount,
         pawnMint.publicKey,
@@ -983,7 +969,6 @@ describe("PawnHub", () => {
 
 async function testInvalidTerms(
   program: Program<PawnShop>,
-  baseKeypair: Keypair,
   borrowerKeypair: Keypair,
   borrowerPawnTokenAccount: PublicKey,
   pawnMint: PublicKey,
@@ -992,7 +977,6 @@ async function testInvalidTerms(
   try {
     await requestLoan(
       program,
-      baseKeypair,
       borrowerKeypair,
       borrowerPawnTokenAccount,
       pawnMint,
