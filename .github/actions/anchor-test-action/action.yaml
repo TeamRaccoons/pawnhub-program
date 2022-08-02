@@ -15,7 +15,7 @@ inputs:
     default: ""
 runs:
   using: "docker"
-  image: "docker://mrgnlabs/solana-dev:0.0.2-alpha"
+  image: "docker://raccoonsdev/solana-dev:1.0.1"
   entrypoint: shell-exec
   args:
     - "cd ${{ inputs.workspace_dir }}"

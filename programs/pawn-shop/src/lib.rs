@@ -1,12 +1,16 @@
 use std::{cmp, convert::TryInto};
 
-use anchor_lang::{prelude::*, system_program};
+use anchor_lang::{prelude::*, solana_program::program::invoke_signed, system_program};
 use anchor_spl::token::{self, Mint, Token, TokenAccount};
+use mpl_token_metadata::instruction::{freeze_delegated_account, thaw_delegated_account};
 use vipers::prelude::*;
+
+mod macros;
+use macros::{freeze_pawn_token_account, thaw_pawn_token_account};
 
 const ADMIN_FEE_BPS: u64 = 200; // 2%
 const SECONDS_PER_YEAR: u64 = 31_536_000;
-const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500; //25%
+const MINIMUM_PERIOD_RATIO_BPS: u64 = 2_500; // 25%
 
 mod native_mint {
     use super::*;
@@ -26,7 +30,7 @@ mod fee_collector {
 declare_id!("PawnShop11111111111111111111111111111111112");
 
 #[cfg(feature = "devnet")]
-declare_id!("6LPeFKNuZ39CRgHkoWsRZB8QWrvb8kPLs289G7bF6QgZ");
+declare_id!("GLcEe1BaCDWcis4sWhCVB95ti7GjR9tHD2M9Y2Q5gV9H");
 
 #[cfg(feature = "mainnet")]
 declare_id!("PawnLnfQT8tszFmSqdJHb2377ou74z3p6R4Eu1FCeyL");
@@ -35,22 +39,18 @@ declare_id!("PawnLnfQT8tszFmSqdJHb2377ou74z3p6R4Eu1FCeyL");
 pub mod pawn_shop {
     use super::*;
 
-    /// Borrower opens a loan request. Pawn token moves to program escrow.
-    pub fn request_loan(
-        ctx: Context<RequestLoan>,
-        amount: u64,
-        desired_terms: Option<LoanTerms>,
-    ) -> Result<()> {
+    /// Borrower opens a loan request. Pawn is frozen
+    pub fn request_loan(ctx: Context<RequestLoan>, desired_terms: Option<LoanTerms>) -> Result<()> {
         {
             let unix_timestamp = Clock::get()?.unix_timestamp;
             let pawn_loan = &mut ctx.accounts.pawn_loan;
 
-            invariant!(amount != 0, PawnAmountIsZero);
-
-            pawn_loan.bump = unwrap_bump!(ctx, "pawn_token_account");
+            pawn_loan.base = ctx.accounts.base.key();
+            pawn_loan.bump = unwrap_bump!(ctx, "pawn_loan");
             pawn_loan.status = LoanStatus::Open;
             pawn_loan.borrower = ctx.accounts.borrower.key();
             pawn_loan.pawn_token_account = ctx.accounts.pawn_token_account.key();
+            pawn_loan.pawn_mint = ctx.accounts.pawn_mint.key();
             match &desired_terms {
                 Some(terms) => {
                     invariant!(terms.principal_amount != 0, InvalidLoanTerms);
@@ -62,24 +62,25 @@ pub mod pawn_shop {
             pawn_loan.desired_terms = desired_terms;
             pawn_loan.creation_time = unix_timestamp;
 
-            token::transfer(
+            // Freeze the pawn token account
+            token::approve(
                 CpiContext::new(
                     ctx.accounts.token_program.to_account_info(),
-                    token::Transfer {
-                        from: ctx.accounts.borrower_pawn_token_account.to_account_info(),
+                    token::Approve {
                         to: ctx.accounts.pawn_token_account.to_account_info(),
+                        delegate: ctx.accounts.pawn_loan.to_account_info(),
                         authority: ctx.accounts.borrower.to_account_info(),
                     },
                 ),
-                amount,
+                1,
             )?;
+
+            freeze_pawn_token_account!(ctx);
         }
 
         emit!(LoanRequested {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
-            pawn_amount: amount,
         });
 
         Ok(())
@@ -90,7 +91,6 @@ pub mod pawn_shop {
         ctx: Context<UnderwriteLoan>,
         expected_terms: LoanTerms,
         expected_pawn_mint: Pubkey,
-        expected_pawn_amount: u64,
     ) -> Result<()> {
         {
             let unix_timestamp = Clock::get()?.unix_timestamp;
@@ -105,16 +105,7 @@ pub mod pawn_shop {
 
             // Verify loan matches lender expectation
             invariant!(expected_terms == terms, UnexpectedDesiredTerms);
-            let pawn_token_account = &ctx.accounts.pawn_token_account;
-            assert_keys_eq!(
-                expected_pawn_mint,
-                pawn_token_account.mint,
-                UnexpectedPawnMint
-            );
-            invariant!(
-                expected_pawn_amount == pawn_token_account.amount,
-                UnexpectedPawnAmount
-            );
+            assert_keys_eq!(expected_pawn_mint, pawn_loan.pawn_mint, UnexpectedPawnMint);
 
             let principal_amount = terms.principal_amount;
             let loan_mint = terms.mint;
@@ -156,8 +147,6 @@ pub mod pawn_shop {
         emit!(LoanUnderwritten {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
-            pawn_amount: ctx.accounts.pawn_token_account.amount,
         });
 
         Ok(())
@@ -246,70 +235,37 @@ pub mod pawn_shop {
                 )?;
             }
 
-            // Borrower gets the pawn back.
-            token::transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.to_account_info(),
-                    token::Transfer {
-                        from: ctx.accounts.pawn_token_account.to_account_info(),
-                        to: ctx.accounts.borrower_pawn_token_account.to_account_info(),
-                        authority: ctx.accounts.pawn_token_account.to_account_info(),
-                    },
-                    &[&[
-                        b"pawn-token-account",
-                        pawn_loan.key().as_ref(),
-                        &[pawn_loan.bump],
-                    ]],
-                ),
-                ctx.accounts.pawn_token_account.amount,
-            )?;
+            thaw_pawn_token_account!(ctx);
+            token::revoke(CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                token::Revoke {
+                    source: ctx.accounts.pawn_token_account.to_account_info(),
+                    authority: ctx.accounts.borrower.to_account_info(),
+                },
+            ))?;
         }
 
         emit!(LoanRepaid {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
-            pawn_amount: ctx.accounts.pawn_token_account.amount,
         });
 
         Ok(())
     }
 
-    // Closes the loan request and returns pawn to borrower.
+    // Closes the loan request and thaw pawn.
     pub fn cancel_loan(ctx: Context<CancelLoan>) -> Result<()> {
         let pawn_loan = &mut ctx.accounts.pawn_loan;
 
         invariant!(pawn_loan.status == LoanStatus::Open, InvalidLoanStatus);
 
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                token::Transfer {
-                    from: ctx.accounts.pawn_token_account.to_account_info(),
-                    to: ctx.accounts.borrower_pawn_token_account.to_account_info(),
-                    authority: ctx.accounts.pawn_token_account.to_account_info(),
-                },
-                &[&[
-                    b"pawn-token-account",
-                    pawn_loan.key().as_ref(),
-                    &[pawn_loan.bump],
-                ]],
-            ),
-            ctx.accounts.pawn_token_account.amount,
-        )?;
-
-        token::close_account(CpiContext::new_with_signer(
+        thaw_pawn_token_account!(ctx);
+        token::revoke(CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
-            token::CloseAccount {
-                account: ctx.accounts.pawn_token_account.to_account_info(),
-                destination: ctx.accounts.borrower.to_account_info(),
-                authority: ctx.accounts.pawn_token_account.to_account_info(),
+            token::Revoke {
+                source: ctx.accounts.pawn_token_account.to_account_info(),
+                authority: ctx.accounts.borrower.to_account_info(),
             },
-            &[&[
-                b"pawn-token-account",
-                pawn_loan.key().as_ref(),
-                &[pawn_loan.bump],
-            ]],
         ))?;
 
         Ok(())
@@ -329,18 +285,20 @@ pub mod pawn_shop {
             pawn_loan.status = LoanStatus::Defaulted;
             pawn_loan.end_time = unix_timestamp;
 
+            // Thaw token account then transfer to lender
+            thaw_pawn_token_account!(ctx);
             token::transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.token_program.to_account_info(),
                     token::Transfer {
                         from: ctx.accounts.pawn_token_account.to_account_info(),
                         to: ctx.accounts.lender_pawn_token_account.to_account_info(),
-                        authority: ctx.accounts.pawn_token_account.to_account_info(),
+                        authority: ctx.accounts.pawn_loan.to_account_info(),
                     },
                     &[&[
-                        b"pawn-token-account",
-                        pawn_loan.key().as_ref(),
-                        &[pawn_loan.bump],
+                        ctx.accounts.pawn_loan.base.as_ref(),
+                        b"pawn_loan".as_ref(),
+                        &[ctx.accounts.pawn_loan.bump],
                     ]],
                 ),
                 ctx.accounts.pawn_token_account.amount,
@@ -350,8 +308,6 @@ pub mod pawn_shop {
         emit!(PawnSeized {
             pawn_loan_address: ctx.accounts.pawn_loan.key(),
             pawn_loan: *ctx.accounts.pawn_loan,
-            pawn_mint: ctx.accounts.pawn_token_account.mint,
-            pawn_amount: ctx.accounts.pawn_token_account.amount,
         });
 
         Ok(())
@@ -406,25 +362,26 @@ pub mod pawn_shop {
 
 #[derive(Accounts)]
 pub struct RequestLoan<'info> {
-    #[account(init, payer = borrower, space = PawnLoan::space())]
+    #[account(mut)]
+    pub base: Signer<'info>,
+    #[account(init, seeds = [base.key.as_ref(), b"pawn_loan".as_ref()], bump, payer = borrower, space = PawnLoan::space())]
     pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(init, seeds = [b"pawn-token-account", pawn_loan.key().as_ref()], bump, payer = borrower, token::mint = pawn_mint, token::authority = pawn_token_account)]
-    pub pawn_token_account: Account<'info, TokenAccount>,
-    pub pawn_mint: Account<'info, Mint>,
     #[account(mut)]
     pub borrower: Signer<'info>,
-    #[account(mut)]
-    pub borrower_pawn_token_account: Account<'info, TokenAccount>,
+    #[account(mut, token::mint = pawn_mint)]
+    pub pawn_token_account: Account<'info, TokenAccount>,
+    pub pawn_mint: Account<'info, Mint>,
+    /// CHECK: Validated by the cpi to mpl token metadata
+    pub edition: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
-    pub rent: Sysvar<'info, Rent>,
+    pub mpl_token_metadata_program: Program<'info, MplTokenMetadata>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct UnderwriteLoan<'info> {
-    #[account(mut, has_one = pawn_token_account)]
+    #[account(mut)]
     pub pawn_loan: Account<'info, PawnLoan>,
-    pub pawn_token_account: Account<'info, TokenAccount>,
     pub lender: Signer<'info>,
     /// CHECK: Sends the principal, can be the lender wallet or his spl token account
     #[account(mut)]
@@ -438,16 +395,17 @@ pub struct UnderwriteLoan<'info> {
 
 #[derive(Accounts)]
 pub struct RepayLoan<'info> {
-    #[account(mut, has_one = borrower, has_one = pawn_token_account)]
+    #[account(mut, has_one = pawn_token_account, has_one = pawn_mint, has_one = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
+    pub pawn_mint: Account<'info, Mint>,
+    /// CHECK: Validated by the cpi to mpl token metadata
+    pub edition: UncheckedAccount<'info>,
     pub borrower: Signer<'info>,
     /// CHECK: Sends the payoff, can be the borrower wallet or his spl token account
     #[account(mut)]
     pub borrower_payment_account: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub borrower_pawn_token_account: Account<'info, TokenAccount>,
     /// CHECK: Receives the payoff, can be the lender wallet or his spl token account
     #[account(mut)]
     pub lender_payment_account: UncheckedAccount<'info>,
@@ -457,33 +415,41 @@ pub struct RepayLoan<'info> {
     #[account(mut)]
     pub admin_payment_account: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
+    pub mpl_token_metadata_program: Program<'info, MplTokenMetadata>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct CancelLoan<'info> {
-    #[account(mut, has_one = borrower, has_one = pawn_token_account, close = borrower)]
+    #[account(mut, has_one = borrower, has_one = pawn_token_account, has_one = pawn_mint, close = borrower)]
     pub pawn_loan: Account<'info, PawnLoan>,
-    #[account(mut)]
-    pub pawn_token_account: Account<'info, TokenAccount>,
     #[account(mut)]
     pub borrower: Signer<'info>,
     #[account(mut)]
-    pub borrower_pawn_token_account: Account<'info, TokenAccount>,
+    pub pawn_token_account: Account<'info, TokenAccount>,
+    pub pawn_mint: Account<'info, Mint>,
+    /// CHECK: Validated by the cpi to mpl token metadata
+    pub edition: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
+    pub mpl_token_metadata_program: Program<'info, MplTokenMetadata>,
 }
 
 #[derive(Accounts)]
 pub struct SeizePawn<'info> {
-    #[account(mut, has_one = lender, has_one = pawn_token_account)]
+    #[account(mut, has_one = lender, has_one = pawn_token_account, has_one = pawn_mint)]
     pub pawn_loan: Account<'info, PawnLoan>,
     #[account(mut)]
     pub pawn_token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub pawn_mint: Account<'info, Mint>,
+    /// CHECK: Validated by the cpi to mpl token metadata
+    pub edition: UncheckedAccount<'info>,
     #[account(mut)]
     pub lender: Signer<'info>,
     #[account(mut)]
     pub lender_pawn_token_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    pub mpl_token_metadata_program: Program<'info, MplTokenMetadata>,
 }
 
 #[derive(Accounts)]
@@ -527,9 +493,11 @@ impl LoanTerms {
 #[account]
 #[derive(Copy)]
 pub struct PawnLoan {
+    pub base: Pubkey,
     pub bump: u8,
     pub borrower: Pubkey,
     pub pawn_token_account: Pubkey,
+    pub pawn_mint: Pubkey,
     pub status: LoanStatus,
     pub lender: Pubkey,
     pub desired_terms: Option<LoanTerms>,
@@ -541,7 +509,7 @@ pub struct PawnLoan {
 
 impl PawnLoan {
     fn space() -> usize {
-        8 + 1 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
+        8 + 32 + 1 + 32 + 32 + 32 + 1 + 32 + 2 * (1 + LoanTerms::space()) + 8 + 8 + 8
     }
 }
 
@@ -609,32 +577,33 @@ pub enum ErrorCode {
 pub struct LoanRequested {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
-    pawn_amount: u64,
 }
 
 #[event]
 pub struct LoanUnderwritten {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
-    pawn_amount: u64,
 }
 
 #[event]
 pub struct LoanRepaid {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
-    pawn_amount: u64,
 }
 
 #[event]
 pub struct PawnSeized {
     pawn_loan_address: Pubkey,
     pawn_loan: PawnLoan,
-    pawn_mint: Pubkey,
-    pawn_amount: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MplTokenMetadata;
+
+impl anchor_lang::Id for MplTokenMetadata {
+    fn id() -> Pubkey {
+        mpl_token_metadata::ID
+    }
 }
 
 #[cfg(test)]
